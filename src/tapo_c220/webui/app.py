@@ -59,6 +59,7 @@ class RecordStart(BaseModel):
 def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None) -> FastAPI:
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
+    playing: set[asyncio.Task] = set()  # スピーカーで鳴らしている（順番待ちを含む）処理
     record_lock = asyncio.Lock()  # 開始と停止を1つずつ行う（同時の開始で ffmpeg を2本起こさない）
 
     @asynccontextmanager
@@ -187,8 +188,25 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         with tempfile.NamedTemporaryFile(suffix=Path(file.filename or "").suffix[:8]) as tmp:
             tmp.write(data)
             tmp.flush()
-            seconds = await cam().play(tmp.name, audio_filter=f"volume={gain_db:.1f}dB" if gain_db else "")
+            task = asyncio.create_task(cam().play(tmp.name, audio_filter=f"volume={gain_db:.1f}dB" if gain_db else ""))
+            playing.add(task)
+            try:
+                seconds = await task
+            except asyncio.CancelledError:
+                if not task.cancelled():  # 止められたのは再生ではなく、この要求そのもの（ブラウザが切れた等）
+                    task.cancel()
+                    raise
+                return {"stopped": True}
+            finally:
+                playing.discard(task)
         return {"seconds": round(seconds, 2)}
+
+    @app.post("/api/speaker/stop")
+    async def speaker_stop() -> dict:
+        """鳴らしている途中の音声を止める。"""
+        for task in playing:
+            task.cancel()
+        return {"stopped": len(playing)}
 
     # --- 首振り -------------------------------------------------------------------------------------------------------
 

@@ -76,9 +76,10 @@ class TapoC220:
 
     # --- スピーカー（Tapo 独自の双方向音声） -----------------------------------------------------------------------------
 
-    async def play(self, source: str | Path, *, max_seconds: float = 60.0, audio_filter: str = "") -> float:
+    async def play(self, source: str | Path, *, max_seconds: float | None = None, audio_filter: str = "") -> float:
         """音声ファイル（ffmpeg が読める形式なら何でも）をカメラのスピーカーで鳴らす。鳴らした秒数を返す。
-        鳴り終わるまで戻らない。同時には1つだけ（重なった呼び出しは順番を待つ）。"""
+        鳴り終わるまで戻らない。同時には1つだけ（重なった呼び出しは順番を待つ）。
+        max_seconds を指定すると先頭のその長さだけを鳴らす。途中でやめるには、この呼び出しをキャンセルする。"""
         alaw = await media.to_alaw(source, max_seconds=max_seconds, audio_filter=audio_filter)
         async with self._speaker:
             await play_alaw(self.cfg.host, self.cfg.cloud_password, alaw, port=self.cfg.talk_port)

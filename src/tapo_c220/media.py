@@ -171,10 +171,12 @@ async def record(cfg: TapoConfig, path: str | Path, *, kind: str = "audio", stre
     return Recording(await _Process.start(cfg, argv + ["-y", str(path)], stdin=True), path, kind)
 
 
-async def to_alaw(source: str | Path, *, max_seconds: float = 60.0, audio_filter: str = "") -> bytes:
+async def to_alaw(source: str | Path, *, max_seconds: float | None = None, audio_filter: str = "") -> bytes:
     """音声ファイルを、カメラのスピーカーへ送る形式（8kHz モノラルの G.711 A-law、見出し無し）にする。"""
     argv = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(source), "-vn", "-ac", "1",
-            "-ar", "8000", "-t", f"{max_seconds:.3f}"]
+            "-ar", "8000"]
+    if max_seconds:  # 指定があれば、先頭のその長さだけにする
+        argv += ["-t", f"{max_seconds:.3f}"]
     if audio_filter:
         argv += ["-af", audio_filter]
     proc = await asyncio.create_subprocess_exec(*argv, "-f", "alaw", "pipe:1", stdout=asyncio.subprocess.PIPE,

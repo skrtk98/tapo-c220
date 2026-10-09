@@ -111,8 +111,9 @@
       <div class="row">
         <button id="play">ファイルを鳴らす</button>
         <button id="mic">🎙 マイクで話す</button>
+        <button id="speaker-stop" disabled>■ 止める</button>
       </div>
-      <p class="mono" style="margin:10px 0 0">Tapo 独自の双方向音声（8800 番）。鳴り終わるまで次は送れない。</p>
+      <p class="mono" style="margin:10px 0 0">Tapo 独自の双方向音声（8800 番）。鳴り終わるか止めるまで、次は送れない。</p>
     </section>
   </aside>
 </main>
@@ -313,12 +314,14 @@ async function sendAudio(blob, name) {
   const form = new FormData();
   form.append("file", blob, name);
   $("play").disabled = $("mic").disabled = true;
+  $("speaker-stop").disabled = false;
   say("カメラのスピーカーで再生中…");
   try {
     const result = await api(`/api/speaker/play?gain_db=${$("gain").value}`, { method: "POST", body: form });
-    say(`${result.seconds} 秒ぶん鳴らした`);
-  } finally { $("play").disabled = $("mic").disabled = false; }
+    say(result.stopped ? "再生を止めた" : `${result.seconds} 秒ぶん鳴らした`);
+  } finally { $("play").disabled = $("mic").disabled = false; $("speaker-stop").disabled = true; }
 }
+$("speaker-stop").addEventListener("click", run(() => api("/api/speaker/stop", { method: "POST" })));
 $("play").addEventListener("click", run(async () => {
   const file = $("file").files[0];
   if (!file) return say("音声ファイルを選ぶこと", true);
