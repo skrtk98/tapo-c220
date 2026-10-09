@@ -9,7 +9,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from . import DIRECTIONS, MediaError, OnvifError, TalkError, TapoC220
+from . import Direction, MediaError, OnvifError, TalkError, TapoC220
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -55,11 +55,11 @@ def main() -> None:
     p.add_argument("path")
     p.add_argument("--filter", default="", help="ffmpeg の音声フィルタ（例: volume=-6dB）")
     p = sub.add_parser("move", help="その向きへ、決めた秒数だけ動かす")
-    p.add_argument("direction", choices=list(DIRECTIONS))
+    p.add_argument("direction", choices=list(Direction))
     p.add_argument("--seconds", type=float, default=1.0)
     p.add_argument("--speed", type=float, default=0.5)
     p = sub.add_parser("step", help="その向きへ、決めた量だけ動かす")
-    p.add_argument("direction", choices=list(DIRECTIONS))
+    p.add_argument("direction", choices=list(Direction))
     p.add_argument("--amount", type=float, default=0.05)
     p = sub.add_parser("goto", help="位置（それぞれ -1〜1）を指定して動かす")
     p.add_argument("pan", type=float)

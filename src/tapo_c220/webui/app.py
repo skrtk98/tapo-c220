@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import MAIN, SUB, MediaError, OnvifError, Recording, TalkError, TapoC220
+from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
 from ..media import MJPEG_BOUNDARY
 
 _STATIC = Path(__file__).parent / "static"
@@ -26,12 +26,12 @@ _UPLOAD_MAX = 20 * 1024 * 1024  # スピーカーで鳴らす音声の大きさ�
 
 
 class Move(BaseModel):
-    direction: str
+    direction: Direction
     speed: float = Field(0.5, ge=0, le=1)
 
 
 class Step(BaseModel):
-    direction: str
+    direction: Direction
     amount: float = Field(0.05, gt=0, le=1)
 
 

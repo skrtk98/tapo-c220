@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from tapo_c220 import OnvifClient, OnvifError, TapoC220, TapoConfig
+from tapo_c220 import Direction, OnvifClient, OnvifError, TapoC220, TapoConfig
 from tapo_c220.onvif import redact
 from tapo_c220.talk import Muxer, _reply_params, crc32_mpeg, digest_password, header_packets
 
@@ -77,14 +77,15 @@ async def test_directions_follow_the_view():
     camera = TapoC220(CFG)
     client, sent = _client(lambda _: httpx.Response(200, text=_envelope("<tptz:OkResponse/>")))
     camera.onvif = client
-    await camera.move("right", 0.4)
+    await camera.move(Direction.RIGHT, 0.4)
     assert 'x="0.400000" y="0.000000"' in sent[-1]
     await camera.step("right", 0.1)
     assert 'x="-0.100000" y="0.000000"' in sent[-1]
     await camera.step("up", 0.1)
     assert 'y="0.100000"' in sent[-1]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="left / right / up / down"):
         await camera.move("sideways")
+    assert Direction("up") is Direction.UP and Direction.UP == "up"
 
 
 def test_redact_hides_credentials():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from enum import StrEnum
 from pathlib import Path
 
 from . import media
@@ -12,17 +13,27 @@ from .media import Recording
 from .onvif import OnvifClient, Preset, PtzPosition
 from .talk import TalkError, play_alaw
 
-# 画面がその向きへ動く、ContinuousMove の速度（pan, tilt）の符号。
-# C220 の実測では、速度は「正の pan で右、正の tilt で上」。一方、位置（GetStatus・AbsoluteMove・RelativeMove）の
-# pan は向きが逆で、正の値で左を向く。tilt は位置も正の値で上。
-DIRECTIONS: dict[str, tuple[int, int]] = {"left": (-1, 0), "right": (1, 0), "up": (0, 1), "down": (0, -1)}
+class Direction(StrEnum):
+    """画面が動く向き。値は "left" などの文字列で、`Direction("left")` のように文字列からも作れる。"""
+
+    LEFT = "left"
+    RIGHT = "right"
+    UP = "up"
+    DOWN = "down"
+
+    @property
+    def velocity(self) -> tuple[int, int]:
+        """画面がこの向きへ動く、ContinuousMove の速度（pan, tilt）の符号。
+        C220 の実測では、速度は「正の pan で右、正の tilt で上」。一方、位置（GetStatus・AbsoluteMove・RelativeMove）の
+        pan は向きが逆で、正の値で左を向く。tilt は位置も正の値で上。"""
+        return _VELOCITY[self]
+
+    @classmethod
+    def _missing_(cls, value: object) -> Direction | None:
+        raise ValueError(f"向きは {' / '.join(cls)} のどれか: {value}")
 
 
-def _direction(direction: str) -> tuple[int, int]:
-    try:
-        return DIRECTIONS[direction]
-    except KeyError:
-        raise ValueError(f"向きは {' / '.join(DIRECTIONS)} のどれか: {direction}") from None
+_VELOCITY = {Direction.LEFT: (-1, 0), Direction.RIGHT: (1, 0), Direction.UP: (0, 1), Direction.DOWN: (0, -1)}
 
 
 class TapoC220:
@@ -84,15 +95,15 @@ class TapoC220:
     async def position(self) -> PtzPosition:
         return await self.onvif.ptz_status()
 
-    async def move(self, direction: str, speed: float = 0.5, timeout: float | None = None) -> None:
+    async def move(self, direction: Direction | str, speed: float = 0.5, timeout: float | None = None) -> None:
         """その向きへ動かし続ける。stop() を呼ぶか、timeout（秒）で止まる。speed は 0〜1。"""
-        pan, tilt = _direction(direction)
+        pan, tilt = Direction(direction).velocity
         speed = min(max(speed, 0.0), 1.0)
         await self.onvif.continuous_move(pan * speed, tilt * speed, timeout)
 
-    async def step(self, direction: str, amount: float = 0.05) -> None:
+    async def step(self, direction: Direction | str, amount: float = 0.05) -> None:
         """その向きへ、決まった量だけ動かす。amount は可動域の全体を 2 としたときの量。"""
-        pan, tilt = _direction(direction)
+        pan, tilt = Direction(direction).velocity
         await self.onvif.relative_move(-pan * amount, tilt * amount)  # 位置の pan は、速度と向きが逆
 
     async def stop(self) -> None:
@@ -115,4 +126,4 @@ class TapoC220:
         await self.onvif.remove_preset(token)
 
 
-__all__ = ["DIRECTIONS", "TalkError", "TapoC220"]
+__all__ = ["Direction", "TalkError", "TapoC220"]
