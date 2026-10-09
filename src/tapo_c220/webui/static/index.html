@@ -44,6 +44,10 @@
   li .row { justify-content: space-between; }
   a { color: var(--accent); }
   .mono { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  .segments { max-height: 220px; overflow-y: auto; margin-top: 10px; display: grid; gap: 4px; }
+  .segments button { text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
+  .segments button.event { border-left: 3px solid var(--danger); }
+  input[type=datetime-local], input[type=number] { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; }
   #message { min-height: 1.5em; font-size: 12px; color: var(--muted); margin-left: auto; }
   #message.error { color: var(--danger); }
 </style>
@@ -79,6 +83,21 @@
         <span id="rec-status" class="mono"></span>
       </div>
       <ul id="recordings"></ul>
+    </section>
+    <section>
+      <h2>microSD の録画（カメラ本体の録画から、一部を取り出して上の一覧に保存）</h2>
+      <div class="row">
+        <select id="sd-day" aria-label="録画のある日"></select>
+        <span id="sd-status" class="mono"></span>
+      </div>
+      <div class="segments" id="sd-segments"></div>
+      <div class="row">
+        <label for="sd-start">開始</label><input id="sd-start" type="datetime-local" step="1">
+        <label for="sd-seconds">長さ（秒）</label><input id="sd-seconds" type="number" min="1" max="3600" value="60" style="width:80px">
+        <button id="sd-export">取り出す</button>
+        <button id="sd-cancel" disabled>■ 止める</button>
+      </div>
+      <p class="mono" id="sd-progress" style="margin:10px 0 0">録画は実時間の速さでしか届かない（60 秒ぶんの取り出しに約 60 秒かかる）。</p>
     </section>
   </div>
   <aside>
@@ -308,6 +327,58 @@ $("rec-stop").addEventListener("click", run(async () => {
   finally { await showRecording(); await loadRecordings(); }
 }));
 
+// --- microSD の録画 ---
+const clock = (t) => new Date(t * 1000).toLocaleTimeString("ja-JP", { hour12: false });
+const span = (s) => s >= 60 ? `${Math.floor(s / 60)}分${Math.round(s % 60)}秒` : `${Math.round(s)}秒`;
+function toLocalInput(t) {  // datetime-local の値（その場所の時刻）
+  const d = new Date(t * 1000), pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+async function loadSdDay() {
+  const day = $("sd-day").value;
+  if (!day) return;
+  $("sd-segments").replaceChildren(Object.assign(document.createElement("span"), { className: "mono", textContent: "読み込み中…" }));
+  const list = await api(`/api/sd/segments?date=${day}`);
+  $("sd-segments").replaceChildren(...list.reverse().map((segment) => {
+    const length = segment.end - segment.start, kind = segment.kind === "event" ? "検知" : segment.kind === "continuous" ? "常時" : segment.kind;
+    const button = Object.assign(document.createElement("button"), { textContent: `${clock(segment.start)} 〜 ${clock(segment.end)}　${span(length)}　${kind}`, title: "この区間を「開始」と「長さ」に入れる" });
+    button.classList.toggle("event", segment.kind === "event");
+    button.addEventListener("click", () => { $("sd-start").value = toLocalInput(segment.start); $("sd-seconds").value = Math.min(3600, Math.max(1, Math.round(length))); });
+    return button;
+  }));
+}
+async function loadSd() {
+  const info = await api("/api/sd");
+  const card = info.status;
+  $("sd-status").textContent = card.status ? `カード: ${card.status}　空き ${card.free_space} / ${card.total_space}` : "カードが無い";
+  $("sd-day").replaceChildren(...info.days.reverse().map((day) => Object.assign(document.createElement("option"), { value: day, textContent: `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)}` })));
+  await loadSdDay();
+}
+let sdTimer = null;
+async function showSdExport() {
+  const job = await api("/api/sd/export");
+  $("sd-export").disabled = job.running;
+  $("sd-cancel").disabled = !job.running;
+  clearTimeout(sdTimer);
+  if (job.running) {
+    $("sd-progress").textContent = `取り出し中: ${job.name}　${Math.floor(job.done)} / ${Math.round(job.seconds)} 秒`;
+    sdTimer = setTimeout(run(showSdExport), 1000);
+  } else if (job.name) {
+    $("sd-progress").textContent = job.error ? `${job.name}: ${job.error}` : `${job.name} を保存した`;
+    $("sd-progress").style.color = job.error ? "var(--danger)" : "";
+    await loadRecordings();
+  }
+}
+$("sd-day").addEventListener("change", run(loadSdDay));
+$("sd-export").addEventListener("click", run(async () => {
+  const start = new Date($("sd-start").value).getTime() / 1000, seconds = Number($("sd-seconds").value);
+  if (!start) return say("開始の時刻を入れること（一覧の区間を押すと入る）", true);
+  $("sd-progress").style.color = "";
+  await api("/api/sd/export", { json: { start, seconds } });
+  await showSdExport();
+}));
+$("sd-cancel").addEventListener("click", run(() => api("/api/sd/export/cancel", { method: "POST" })));
+
 // --- スピーカー ---
 $("gain").addEventListener("input", () => { $("gain-value").textContent = `${$("gain").value} dB`; });
 async function sendAudio(blob, name) {
@@ -354,6 +425,8 @@ run(async () => {
   showPosition(info.position);
   if (!info.speaker) { $("play").disabled = $("mic").disabled = true; say("TAPO_CLOUD_PASSWORD が無いので、スピーカーは使えない"); }
   await Promise.all([loadPresets(), showRecording(), loadRecordings()]);
+  if (info.speaker) await Promise.all([loadSd(), showSdExport()]);
+  else $("sd-status").textContent = "TAPO_CLOUD_PASSWORD が無いので使えない";
 })();
 showLive();
 </script>

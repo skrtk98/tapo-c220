@@ -139,3 +139,27 @@ async def test_webrtc_retimes_sender_report_jumps():
     assert [(await video.recv()).pts for _ in range(5)] == [0, frame, 2 * frame, 3 * frame, 4 * frame]
     audio = _Retimed(Source("audio", Fraction(1, 8000), 512, [9000, 9512, 6900, 7412]))
     assert [(await audio.recv()).pts for _ in range(4)] == [0, 512, 1024, 1536]
+
+
+def test_sdcard_ts_reader_and_decryptor():
+    """スピーカー用に組み立てた TS（音声だけ）を、SD カード用の読み取りで元に戻せる。断片の切れ目は任意。"""
+    import hashlib
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from tapo_c220.sdcard import SdCardError, TsReader, decryptor
+
+    mux = Muxer()
+    sound = bytes(range(160)) * 5
+    stream = mux.header() + b"".join(mux.audio(sound[i:i + 160]) for i in range(0, len(sound), 160))
+    reader = TsReader()
+    for i in range(0, len(stream), 100):
+        reader.feed(stream[i:i + 100])
+    assert reader.codec == ("alaw", 8000) and bytes(reader.audio) == sound and reader.video_seconds == 0
+
+    key, iv = hashlib.md5(b"nonce:PASS").digest(), hashlib.md5(b"admin:nonce").digest()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    decrypt = decryptor("nonce", "PASS")
+    assert decrypt(encryptor.update(b"hello world" + b"\x05" * 5) + encryptor.finalize()) == b"hello world"
+    with pytest.raises(SdCardError):
+        decryptor("nonce", "WRONG")(b"\x00" * 32)

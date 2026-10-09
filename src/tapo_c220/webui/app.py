@@ -17,12 +17,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
+from ..sdcard import SdCard
 from ..webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
-_NAME = re.compile(r"^[0-9]{8}-[0-9]{6}(-[0-9]{3})?\.(wav|mp4)$")
+_NAME = re.compile(r"^(sd-)?[0-9]{8}-[0-9]{6}(-[0-9]{3})?\.(wav|mp4)$")
 _MOVE_TIMEOUT = 5.0             # 押しっぱなしの首振りを、止める指示が届かなくてもカメラ側で止める時間（秒）
 _RECORD_MAX_SECONDS = 3600.0    # 止め忘れた録音・録画を終える時間
+_SD_EXPORT_MAX_SECONDS = 3600.0  # SD カードから1回に取り出せる長さ（実時間の速さでしか届かない）
 _UPLOAD_MAX = 20 * 1024 * 1024  # スピーカーで鳴らす音声の大きさの上限
 
 
@@ -51,6 +53,11 @@ class Offer(BaseModel):
     stream: str = Field(SUB, pattern="^stream[12]$")
 
 
+class SdExport(BaseModel):
+    start: float = Field(gt=0)                                  # UNIX 時刻（秒）
+    seconds: float = Field(gt=0, le=_SD_EXPORT_MAX_SECONDS)
+
+
 class RecordStart(BaseModel):
     kind: str = Field("audio", pattern="^(audio|video)$")
     stream: str = Field(MAIN, pattern="^stream[12]$")
@@ -59,6 +66,7 @@ class RecordStart(BaseModel):
 def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None) -> FastAPI:
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
+    export: dict = {"task": None, "name": "", "seconds": 0.0, "done": 0.0, "error": ""}  # SD カードからの取り出し
     playing: set[asyncio.Task] = set()  # スピーカーで鳴らしている（順番待ちを含む）処理
     record_lock = asyncio.Lock()  # 開始と停止を1つずつ行う（同時の開始で ffmpeg を2本起こさない）
 
@@ -66,7 +74,11 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     async def lifespan(app: FastAPI):
         app.state.camera = camera or TapoC220()
         app.state.webrtc = WebRtcSessions(app.state.camera.cfg)
+        app.state.sdcard = SdCard(app.state.camera.cfg)
         yield
+        if export["task"] is not None:
+            export["task"].cancel()
+            await asyncio.gather(export["task"], return_exceptions=True)
         await app.state.webrtc.close()
         if state["recording"] is not None:
             try:
@@ -162,8 +174,10 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
 
     @app.get("/api/recordings")
     async def recordings() -> list[dict]:
-        active = state["recording"].path.name if state["recording"] is not None else ""
-        files = sorted((p for p in directory.glob("*") if _NAME.match(p.name) and p.name != active), reverse=True)
+        active = {state["recording"].path.name if state["recording"] is not None else "",
+                  export["name"] if export["task"] is not None else ""}
+        files = sorted((p for p in directory.glob("*") if _NAME.match(p.name) and p.name not in active),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
         return [{"name": p.name, "bytes": p.stat().st_size} for p in files]
 
     @app.get("/recordings/{name}")
@@ -174,6 +188,53 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     async def recording_delete(name: str) -> dict:
         recorded(name).unlink()
         return {"deleted": name}
+
+    # --- SD カードの録画 ----------------------------------------------------------------------------------------------
+
+    def export_status() -> dict:
+        return {"running": export["task"] is not None, "name": export["name"], "seconds": export["seconds"],
+                "done": round(export["done"], 1), "error": export["error"]}
+
+    @app.get("/api/sd")
+    async def sd_overview() -> dict:
+        status, days = await asyncio.gather(app.state.sdcard.status(), app.state.sdcard.days())
+        return {"status": status, "days": days}
+
+    @app.get("/api/sd/segments")
+    async def sd_segments(date: str) -> list[dict]:
+        return [asdict(s) for s in await app.state.sdcard.segments(date)]
+
+    @app.get("/api/sd/export")
+    async def sd_export_status() -> dict:
+        return export_status()
+
+    @app.post("/api/sd/export")
+    async def sd_export(body: SdExport) -> dict:
+        """録画の一部を MP4 として recordings に取り出す。実時間の速さでしか届かないので、裏で進めて進み具合を返す。"""
+        if export["task"] is not None:
+            raise HTTPException(409, "すでに取り出している")
+        name = "sd-" + time.strftime("%Y%m%d-%H%M%S", time.localtime(body.start)) + ".mp4"
+        export.update(name=name, seconds=body.seconds, done=0.0, error="")
+
+        async def work() -> None:
+            try:
+                await app.state.sdcard.export(body.start, body.seconds, directory / name,
+                                              progress=lambda done: export.update(done=done))
+            except asyncio.CancelledError:
+                export["error"] = "取り出しを止めた"
+            except (TalkError, MediaError) as e:
+                export["error"] = str(e)
+            finally:
+                export["task"] = None
+
+        export["task"] = asyncio.create_task(work())
+        return export_status()
+
+    @app.post("/api/sd/export/cancel")
+    async def sd_export_cancel() -> dict:
+        if export["task"] is not None:
+            export["task"].cancel()
+        return {"ok": True}
 
     # --- スピーカー ---------------------------------------------------------------------------------------------------
 

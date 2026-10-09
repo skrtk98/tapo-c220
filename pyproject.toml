@@ -13,7 +13,12 @@ webui = [
     "aiortc>=1.9",
     "fastapi>=0.115",
     "python-multipart>=0.0.20",
+    "tapo-c220-survey[sdcard]",
     "uvicorn>=0.34",
+]
+sdcard = [
+    "cryptography>=50.0.2",
+    "pytapo>=3.4.26",
 ]
 
 [project.scripts]

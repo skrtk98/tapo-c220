@@ -128,8 +128,9 @@ def _field(text: str, name: str) -> str:
 
 
 async def authenticate(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, host: str, port: int,
-                       cloud_password: str, timeout: float = 10.0) -> None:
-    """8800 番の /stream を Digest 認証する。"""
+                       cloud_password: str, timeout: float = 10.0) -> tuple[str, str]:
+    """8800 番の /stream を Digest 認証する。
+    成功したら、SD カードの録画の復号に使う（Key-Exchange の nonce, ハッシュしたパスワード）を返す。"""
     async def headers() -> str:
         return (await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)).decode(errors="replace")
 
@@ -151,6 +152,8 @@ async def authenticate(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
     if " 200" not in answer.split("\r\n", 1)[0]:
         raise TalkError(f"カメラの認証に失敗した（{answer.split(chr(13), 1)[0].strip()}）。"
                         "Tapo アカウントのパスワードを確かめること")
+    exchange = re.search(r"Key-Exchange: ([^\r\n]*)", answer)
+    return _field(exchange.group(1) if exchange else "", "nonce"), password
 
 
 def _reply_params(reply: bytes) -> dict | None:
