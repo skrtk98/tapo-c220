@@ -64,8 +64,6 @@
           <option value="rtc-sub">WebRTC 640×360（低遅延・音あり）</option>
           <option value="rtc-main">WebRTC 2560×1440（低遅延・音あり）</option>
           <option value="mjpeg">MJPEG 640×360（音なし）</option>
-          <option value="mp4-sub">MP4 640×360（音あり・数秒遅れ）</option>
-          <option value="mp4-main">MP4 2560×1440（音あり・数秒遅れ）</option>
           <option value="audio">音だけ</option>
           <option value="off">停止</option>
         </select>
@@ -183,9 +181,6 @@ function showLive() {
     startRtc(element, mode === "rtc-main" ? "stream1" : "stream2", mine).catch((e) => { if (mine === liveId) say(e.message, true); });
   } else if (mode === "mjpeg") {
     element = Object.assign(document.createElement("img"), { src: `/live.mjpg?${stamp}`, alt: "カメラの映像" });
-  } else if (mode.startsWith("mp4")) {
-    const stream = mode === "mp4-main" ? "stream1" : "stream2";
-    element = Object.assign(document.createElement("video"), { src: `/live.mp4?stream=${stream}&${stamp}`, autoplay: true, controls: true, muted: true, playsInline: true });
   } else if (mode === "audio") {
     element = Object.assign(document.createElement("audio"), { src: `/live.mp3?${stamp}`, autoplay: true, controls: true });
   } else {

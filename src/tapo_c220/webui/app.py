@@ -114,12 +114,6 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         answer = await app.state.webrtc.answer(body.sdp, body.type, body.stream)
         return {"sdp": answer.sdp, "type": answer.type}
 
-    @app.get("/live.mp4")
-    async def live_mp4(stream: str = MAIN) -> StreamingResponse:
-        if stream not in (MAIN, SUB):
-            raise HTTPException(400, "stream は stream1 か stream2")
-        return StreamingResponse(cam().live_mp4(stream), media_type="video/mp4", headers={"Cache-Control": "no-store"})
-
     @app.get("/live.mjpg")
     async def live_mjpeg() -> StreamingResponse:
         return StreamingResponse(cam().live_mjpeg(), headers={"Cache-Control": "no-store"},

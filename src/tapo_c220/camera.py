@@ -66,9 +66,6 @@ class TapoC220:
     async def snapshot(self, stream: str = media.MAIN) -> bytes:
         return await media.snapshot(self.cfg, stream)
 
-    def live_mp4(self, stream: str = media.MAIN) -> AsyncIterator[bytes]:
-        return media.live_mp4(self.cfg, stream)
-
     def live_mjpeg(self, stream: str = media.SUB, *, fps: int = 10) -> AsyncIterator[bytes]:
         return media.live_mjpeg(self.cfg, stream, fps=fps)
 

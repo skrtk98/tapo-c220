@@ -111,14 +111,6 @@ async def _pipe(cfg: TapoConfig, argv: list[str]) -> AsyncIterator[bytes]:
         await process.kill()
 
 
-def live_mp4(cfg: TapoConfig, stream: str = MAIN) -> AsyncIterator[bytes]:
-    """映像と音声を、終わりのない fragmented MP4 として流す。映像は H.264 のまま、音声は AAC に変換する。
-    ブラウザの `<video>` にそのまま渡せる。遅れはキーフレームの間隔で決まり、数秒ある。"""
-    return _pipe(cfg, _input(cfg, stream) + [
-        "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-b:a", "64k",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"])
-
-
 def live_mjpeg(cfg: TapoConfig, stream: str = SUB, *, fps: int = 10) -> AsyncIterator[bytes]:
     """映像を JPEG の連続（`multipart/x-mixed-replace`）に変換して流す。音は無いが遅れが小さく、`<img>` で見られる。
     区切り文字列は MJPEG_BOUNDARY。
