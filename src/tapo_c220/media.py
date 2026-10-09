@@ -7,6 +7,8 @@ C220 で実測したこと（ファームウェア 1.3.1）：
 - 音声はどれも G.711 A-law の 8kHz モノラル（ONVIF は 16kHz と答えるが、SDP と実際の中身は 8kHz）。
 - 認証は RTSP の Digest。カメラアカウントの ID とパスワードを使う。
 - 音声のトラックだけを SETUP すると、音声は届かない。映像と一緒に受け取って捨てる。
+- RTP の時刻は正しく進むが、RTCP の Sender Report の時刻（NTP）が約 0.5 秒ごとに交互に約 ±0.38 秒ずれている。
+  libav はこれに合わせて pts を直すので、pts が約 0.35 秒戻っては約 0.42 秒飛ぶ。パケットの到着そのものは滑らか。
 - SDP に送信用の音声トラックは無い（`Require: www.onvif.org/ver20/backchannel` をつけても増えない）。
 """
 
@@ -41,6 +43,9 @@ def _input(cfg: TapoConfig, stream: str) -> list[str]:
     # 音声だけ欲しいときも、映像のトラックごと受け取る（`-allowed_media_types audio` で音声だけを SETUP すると何も届かない）
     return ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
             "-timeout", "10000000",  # 10 秒なにも届かなければ諦める（マイクロ秒）
+            # 時刻は、届いた時点の時計で付け直す。カメラの RTCP の時刻が約 0.5 秒ごとに交互に約 ±0.38 秒ずれていて、
+            # そのままだと pts が戻っては飛ぶ（録画の映像が毎秒つかえ、音声に隙間ができる）
+            "-use_wallclock_as_timestamps", "1",
             "-i", rtsp_url(cfg, stream)]
 
 

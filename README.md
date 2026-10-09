@@ -82,6 +82,12 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 - 同時に受けられるのは3接続まで。4本めは接続時に拒まれる（同じストリーム3本でも、別々のストリームでも同じ）。
 - 音声のトラックだけを SETUP すると（ffmpeg の `-allowed_media_types audio`）、何も届かず時間切れになる。
   録音するときも映像ごと受け取って捨てる。
+- **RTCP の時刻が乱れている。** RTP のタイムスタンプは正しく進み、パケットも滑らかに届く（30fps、到着の間隔は中央値 33ms・最大 80ms 弱、
+  ping は 2ms 前後で損失なし）。しかし約 0.5 秒ごとに届く RTCP の Sender Report の NTP 時刻が、交互に約 ±0.38 秒ずれている。
+  libav（ffmpeg）はこれに合わせて pts を直すので、pts が約 0.35 秒戻っては約 0.42 秒飛ぶことを毎秒くり返す。
+  そのまま使うと、WebRTC ではブラウザが映像を毎秒止め（20 秒で 20 回・計 7 秒）、音声の約 43% を補間で埋めた。MP4 の録画も映像が毎秒つかえる。
+  対策として、WebRTC ではタイムスタンプを付け直し（音声は標本の数、映像は飛びを普通の進み幅に置き換える）、
+  ffmpeg では届いた時刻を使う（`-use_wallclock_as_timestamps 1`）。対策後は、止まり 0 回・補間 0%・30fps。
 - カメラへ音声を送るトラックは無い。`Require: www.onvif.org/ver20/backchannel` をつけて DESCRIBE しても、SDP は映像と音声（受信）の2本だけ。
 
 ### ONVIF

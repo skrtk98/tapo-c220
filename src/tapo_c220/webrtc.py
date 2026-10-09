@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from aiortc import RTCPeerConnection, RTCRtpSender, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
 from . import media
@@ -24,6 +24,47 @@ _OPEN_TIMEOUT = 10  # RTSP の接続と読み取りを諦めるまでの秒数
 def _open(cfg: TapoConfig, stream: str) -> MediaPlayer:
     return MediaPlayer(media.rtsp_url(cfg, stream), format="rtsp", decode=False, timeout=_OPEN_TIMEOUT,
                        options={"rtsp_transport": "tcp", "fflags": "nobuffer"})
+
+
+class _Retimed(MediaStreamTrack):
+    """カメラのパケットの時刻（pts）を、途切れなく進むように付け直す。
+
+    C220 は RTP の時刻そのものは正しく進めるが、約 0.5 秒ごとに送ってくる RTCP の Sender Report の時刻（NTP）が
+    交互に約 ±0.38 秒ずれている。libav はこれを信じて pts を合わせ直すので、pts が約 0.35 秒戻っては約 0.42 秒飛ぶ。
+    そのまま WebRTC に載せると、ブラウザは映像を毎秒のように止め、音声の4割ほどを補間で埋める。
+    """
+
+    _JUMP = 0.2  # 1つ前との差がこの秒数を超えるか、負なら、Sender Report による合わせ直しとみなす
+
+    def __init__(self, source: MediaStreamTrack):
+        super().__init__()
+        self.kind = source.kind
+        self._source = source
+        self._pts: int | None = None   # 付け直した時刻（パケットの time_base の単位）
+        self._last = 0                 # 1つ前のパケットの、もとの時刻
+        self._step = 0                 # 1つ前までの、普通の進み幅
+
+    async def recv(self):
+        packet = await self._source.recv()
+        if self.kind == "audio":
+            # A-law は 1 バイトが 1 標本で、time_base は 1/8000。届いた標本の数で数える
+            step, self._step = self._step, packet.size
+            self._pts = 0 if self._pts is None else self._pts + step
+        else:
+            delta = packet.pts - self._last
+            if self._pts is None:
+                self._pts = 0
+            elif 0 < delta * packet.time_base < self._JUMP:
+                self._pts, self._step = self._pts + delta, delta
+            else:
+                self._pts += self._step or round(1 / 30 / packet.time_base)
+            self._last = packet.pts
+        packet.pts = packet.dts = self._pts
+        return packet
+
+    def stop(self) -> None:
+        super().stop()
+        self._source.stop()
 
 
 class WebRtcSessions:
@@ -54,7 +95,7 @@ class WebRtcSessions:
             for track in (player.video, player.audio):
                 if track is None:
                     continue
-                sender = peer.addTrack(track)
+                sender = peer.addTrack(_Retimed(track))
                 transceiver = next(t for t in peer.getTransceivers() if t.sender == sender)
                 transceiver.setCodecPreferences([c for c in RTCRtpSender.getCapabilities(track.kind).codecs
                                                  if c.mimeType == _CODECS[track.kind]])

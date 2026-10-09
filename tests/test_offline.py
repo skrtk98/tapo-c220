@@ -109,3 +109,33 @@ def test_talk_helpers():
     assert digest_password("abc", "") == "900150983CD24FB0D6963F7D28E17F72"
     assert _reply_params(b'--b\r\n\r\n{"params":{"session_id":"7"') is None
     assert _reply_params(b'--b\r\n\r\n{"params":{"session_id":"7","error_code":0}}\r\n') == {"session_id": "7", "error_code": 0}
+
+
+async def test_webrtc_retimes_sender_report_jumps():
+    """カメラの pts は約 0.35 秒戻っては約 0.42 秒飛ぶ。付け直した時刻は、途切れなく進む。"""
+    from fractions import Fraction
+
+    import av
+    from aiortc import MediaStreamTrack
+
+    from tapo_c220.webrtc import _Retimed
+
+    class Source(MediaStreamTrack):
+        def __init__(self, kind, time_base, size, stamps):
+            super().__init__()
+            self.kind, self._packets = kind, []
+            for pts in stamps:
+                packet = av.Packet(size)
+                packet.pts, packet.time_base = pts, time_base
+                self._packets.append(packet)
+
+        async def recv(self):
+            return self._packets.pop(0)
+
+    frame = 3000  # 90kHz で 1/30 秒
+    video = _Retimed(Source("video", Fraction(1, 90000), 10,
+                            [50000, 50000 + frame, 50000 + 2 * frame - 31500, 50000 + 3 * frame - 31500,
+                             50000 + 4 * frame + 6300]))
+    assert [(await video.recv()).pts for _ in range(5)] == [0, frame, 2 * frame, 3 * frame, 4 * frame]
+    audio = _Retimed(Source("audio", Fraction(1, 8000), 512, [9000, 9512, 6900, 7412]))
+    assert [(await audio.recv()).pts for _ in range(4)] == [0, 512, 1024, 1536]
