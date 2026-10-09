@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
@@ -72,19 +73,27 @@ class WebRtcSessions:
 
     def __init__(self, cfg: TapoConfig):
         self.cfg = cfg
-        self._peers: set[RTCPeerConnection] = set()
+        self._peers: dict[RTCPeerConnection, Callable[[], Awaitable[None]] | None] = {}
 
     def __len__(self) -> int:
         return len(self._peers)
 
     async def answer(self, sdp: str, sdp_type: str = "offer", stream: str = media.SUB) -> RTCSessionDescription:
-        """ブラウザの offer に対する answer を返し、映像と音声を送り始める。"""
+        """ブラウザの offer に対する answer を返し、ライブの映像と音声を送り始める。"""
         try:
             player = await asyncio.to_thread(_open, self.cfg, stream)  # 接続はブロックするので、別スレッドで
         except Exception as e:  # PyAV の例外は URL（認証情報つき）を含むことがあるので、種類だけ伝える
             raise MediaError(f"カメラの映像を開けない（{type(e).__name__}）。同時に見られるのは3接続まで") from None
+        tracks = [_Retimed(track) for track in (player.video, player.audio) if track is not None]
+        return await self.answer_tracks(sdp, sdp_type, tracks, codecs=_CODECS)
+
+    async def answer_tracks(self, sdp: str, sdp_type: str, tracks: list[MediaStreamTrack], *,
+                            codecs: dict[str, str] | None = None,
+                            on_close: Callable[[], Awaitable[None]] | None = None) -> RTCSessionDescription:
+        """offer に対する answer を返し、渡されたトラックを送り始める。codecs は種類ごとに使うコーデック（変換せず送るとき）。
+        接続が切れるか answer に失敗すると、トラックを止めて on_close を呼ぶ。"""
         peer = RTCPeerConnection()
-        self._peers.add(peer)
+        self._peers[peer] = on_close
 
         @peer.on("connectionstatechange")
         async def on_state() -> None:
@@ -92,20 +101,18 @@ class WebRtcSessions:
                 await self._close(peer)
 
         try:
-            for track in (player.video, player.audio):
-                if track is None:
-                    continue
-                sender = peer.addTrack(_Retimed(track))
-                transceiver = next(t for t in peer.getTransceivers() if t.sender == sender)
-                transceiver.setCodecPreferences([c for c in RTCRtpSender.getCapabilities(track.kind).codecs
-                                                 if c.mimeType == _CODECS[track.kind]])
+            for track in tracks:
+                sender = peer.addTrack(track)
+                if codecs and track.kind in codecs:
+                    transceiver = next(t for t in peer.getTransceivers() if t.sender == sender)
+                    transceiver.setCodecPreferences([c for c in RTCRtpSender.getCapabilities(track.kind).codecs
+                                                     if c.mimeType == codecs[track.kind]])
             await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
             await peer.setLocalDescription(await peer.createAnswer())
         except Exception as e:
             await self._close(peer)
-            for track in (player.video, player.audio):  # 送り始める前に失敗したトラックは、自分で止めて RTSP を閉じる
-                if track is not None:
-                    track.stop()
+            for track in tracks:  # 送り始める前に失敗したトラックは、自分で止める（ライブなら RTSP が閉じる）
+                track.stop()
             if isinstance(e, ValueError):
                 raise ValueError(f"offer を受け付けられない（{e}）") from None
             raise
@@ -113,9 +120,10 @@ class WebRtcSessions:
 
     async def _close(self, peer: RTCPeerConnection) -> None:
         if peer in self._peers:
-            self._peers.discard(peer)
+            on_close = self._peers.pop(peer)
             await peer.close()
+            if on_close is not None:
+                await on_close()
 
     async def close(self) -> None:
         await asyncio.gather(*(self._close(peer) for peer in list(self._peers)), return_exceptions=True)
-

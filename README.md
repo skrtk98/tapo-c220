@@ -56,6 +56,7 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | `tapo_c220.webrtc` | ライブ映像と音声を WebRTC でブラウザへ送る（aiortc） |
 | `tapo_c220.talk` | Tapo 独自の双方向音声（スピーカー） |
 | `tapo_c220.sdcard` | microSD の録画の一覧（pytapo）と取り出し。`[sdcard]` の追加の依存が要る |
+| `tapo_c220.sdplayer` | microSD の録画を、指定した時刻から WebRTC で流し続ける |
 | `tapo_c220.webui` | FastAPI の WebUI（`TapoC220` を HTTP から呼ぶだけ） |
 
 ## 調査結果
@@ -150,7 +151,13 @@ sd = SdCard(cam.cfg)
 days = await sd.days()                         # ["20261008", "20261009", ...]
 segments = await sd.segments(days[-1])         # [Segment(start, end, kind), ...]
 await sd.export(segments[-1].start, 60, "clip.mp4")   # 60 秒ぶんを MP4 に（約 60 秒かかる）
+async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を、やめるまで受け取り続ける
+    ...
 ```
+
+ブラウザでの再生は `tapo_c220.sdplayer.SdPlayer`。指定した時刻からの録画を WebRTC のトラックにして、止めるまで流し続ける。
+映像の H.264 は変換せず送り、音声は µ-law 16kHz が WebRTC の標準の形ではないので、PCM に戻して Opus にする。
+いま流している位置（録画の時刻）は、TS の PTS の進みから求める（`position`）。
 
 ## WebUI
 
@@ -163,7 +170,9 @@ await sd.export(segments[-1].start, 60, "clip.mp4")   # 60 秒ぶんを MP4 に�
 - WebRTC・音だけの表示・録音・録画は、それぞれ RTSP を1本使う。カメラの上限は合わせて3本。
 - 首振り：押している間だけ動く（矢印キーでも可）か、1回押すと少し動くかを選べる。プリセットの保存・移動・削除。
 - 録音（WAV）・録画（MP4）：開始と停止、保存したファイルの再生・ダウンロード・削除。同時には1つ、最長1時間。
-- microSD の録画：録画のある日と区間の一覧から、開始の時刻と長さ（最長1時間）を指定して MP4 に取り出す。
-  取り出したファイルは録音・録画の一覧に `sd-日付-時刻.mp4` として並ぶ。進み具合の表示と、途中での中止ができる。
+- microSD の録画：選んだ日の録画の区間をタイムラインに帯で描く（幅は 24時間・6時間・1時間・10分）。押した時刻から WebRTC で再生し、
+  再生している位置の線が動く。再生中に別の時刻を押すと、そこへ移る（1 秒弱）。止めるまで、または録画の終わりまで流れ続ける。
+  再生している位置から長さ（最長1時間）を指定して MP4 に保存もできる（`sd-日付-時刻.mp4` として録音・録画の一覧に並ぶ）。
+  カメラの再生は1本ずつなので、再生と保存は同時にできない。
 - スピーカー：音声ファイルを送る、またはブラウザのマイクで録って送る（リアルタイムの通話ではない）。長さの上限は無く
   （ファイルは 20MB まで）、途中で止められる。

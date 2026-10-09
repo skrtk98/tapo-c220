@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
 from ..sdcard import SdCard
+from ..sdplayer import SdPlayer
 from ..webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
@@ -53,6 +54,11 @@ class Offer(BaseModel):
     stream: str = Field(SUB, pattern="^stream[12]$")
 
 
+class SdPlay(BaseModel):
+    sdp: str = Field(max_length=65536)
+    start: float = Field(gt=0)  # UNIX 時刻（秒）
+
+
 class SdExport(BaseModel):
     start: float = Field(gt=0)                                  # UNIX 時刻（秒）
     seconds: float = Field(gt=0, le=_SD_EXPORT_MAX_SECONDS)
@@ -67,8 +73,14 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
     export: dict = {"task": None, "name": "", "seconds": 0.0, "done": 0.0, "error": ""}  # SD カードからの取り出し
+    player: dict[str, SdPlayer | None] = {"current": None}  # SD カードの録画の再生（1つだけ）
     playing: set[asyncio.Task] = set()  # スピーカーで鳴らしている（順番待ちを含む）処理
     record_lock = asyncio.Lock()  # 開始と停止を1つずつ行う（同時の開始で ffmpeg を2本起こさない）
+
+    async def stop_player() -> None:
+        current, player["current"] = player["current"], None
+        if current is not None:
+            await current.stop()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -79,6 +91,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         if export["task"] is not None:
             export["task"].cancel()
             await asyncio.gather(export["task"], return_exceptions=True)
+        await stop_player()
         await app.state.webrtc.close()
         if state["recording"] is not None:
             try:
@@ -213,6 +226,8 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         """録画の一部を MP4 として recordings に取り出す。実時間の速さでしか届かないので、裏で進めて進み具合を返す。"""
         if export["task"] is not None:
             raise HTTPException(409, "すでに取り出している")
+        if app.state.sdcard.busy:
+            raise HTTPException(409, "録画を再生している間は取り出せない（再生を止めること）")
         name = "sd-" + time.strftime("%Y%m%d-%H%M%S", time.localtime(body.start)) + ".mp4"
         export.update(name=name, seconds=body.seconds, done=0.0, error="")
 
@@ -234,6 +249,38 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     async def sd_export_cancel() -> dict:
         if export["task"] is not None:
             export["task"].cancel()
+        return {"ok": True}
+
+    @app.post("/api/sd/play")
+    async def sd_play(body: SdPlay) -> dict:
+        """録画を、指定した時刻から WebRTC で流し始める。止めるまで（または録画の終わりまで）続く。前の再生は止める。"""
+        await stop_player()
+        if app.state.sdcard.busy:
+            raise HTTPException(409, "録画を取り出している間は再生できない")
+        current = SdPlayer(app.state.sdcard, body.start)
+
+        async def closed() -> None:
+            await current.stop()
+            if player["current"] is current:
+                player["current"] = None
+
+        answer = await app.state.webrtc.answer_tracks(body.sdp, "offer", [current.video, current.audio],
+                                                      codecs={"video": "video/H264"}, on_close=closed)
+        player["current"] = current
+        current.begin()
+        return {"sdp": answer.sdp, "type": answer.type}
+
+    @app.get("/api/sd/play")
+    async def sd_play_status() -> dict:
+        current = player["current"]
+        if current is None:
+            return {"playing": False}
+        return {"playing": not current.finished, "start": current.start, "position": current.position,
+                "error": current.error}
+
+    @app.post("/api/sd/play/stop")
+    async def sd_play_stop() -> dict:
+        await stop_player()
         return {"ok": True}
 
     # --- スピーカー ---------------------------------------------------------------------------------------------------

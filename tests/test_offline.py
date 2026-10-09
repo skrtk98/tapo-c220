@@ -163,3 +163,18 @@ def test_sdcard_ts_reader_and_decryptor():
     assert decrypt(encryptor.update(b"hello world" + b"\x05" * 5) + encryptor.finalize()) == b"hello world"
     with pytest.raises(SdCardError):
         decryptor("nonce", "WRONG")(b"\x00" * 32)
+
+
+def test_sdplayer_audio_frames():
+    """録画の G.711 を PCM に戻し、20ms ずつのフレームにして音声のトラックへ渡す。"""
+    from tapo_c220.sdplayer import SdPlayer, _g711_table
+
+    assert _g711_table("mulaw")[0xFF] == 0 and _g711_table("mulaw")[0x00] == -32124 and _g711_table("mulaw")[0x80] == 32124
+    assert _g711_table("alaw")[0xD5] == 8 and _g711_table("alaw")[0x55] == -8
+    player = SdPlayer(None, 1000.0)
+    player._ts.codec = ("mulaw", 16000)
+    player._push_audio(b"\xff" * 500)   # 320 標本で1フレーム。余りの 180 は次に回る
+    player._push_audio(b"\xff" * 200)
+    frames = [player.audio.queue.get_nowait() for _ in range(2)]
+    assert [(f.samples, f.sample_rate, f.pts) for f in frames] == [(320, 16000, 0), (320, 16000, 320)]
+    assert player.audio.queue.empty() and player.position == 1000.0

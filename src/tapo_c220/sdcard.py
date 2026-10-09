@@ -247,9 +247,26 @@ class SdCard:
 
     # --- 取り出し（8800 番） -------------------------------------------------------------------------------------------
 
-    async def playback(self, start: float) -> AsyncIterator[bytes]:
+    @property
+    def busy(self) -> bool:
+        """いま録画を取り出している（再生は1本ずつ）。"""
+        return self._playback_lock.locked()
+
+    async def playback(self, start: float, *, exclusive: bool = False) -> AsyncIterator[bytes]:
         """時刻 start（UNIX 時刻）からの録画を、復号した MPEG-TS の断片として流し続ける。読む側がやめるまで続く。
-        実時間の速さで届く。その時刻に録画が無ければ NoRecording。"""
+        実時間の速さで届く。その時刻に録画が無ければ NoRecording。
+        exclusive を真にすると、流している間ほかの取り出しを待たせる（すでに取り出し中なら SdCardError）。"""
+        if exclusive:
+            if self._playback_lock.locked():
+                raise SdCardError("ほかの取り出しが進んでいる")
+            async with self._playback_lock:
+                async for chunk in self._playback(start):
+                    yield chunk
+        else:
+            async for chunk in self._playback(start):
+                yield chunk
+
+    async def _playback(self, start: float) -> AsyncIterator[bytes]:
         waiting = _FIRST_DATA_TIMEOUT
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(self.cfg.host, self.cfg.talk_port),

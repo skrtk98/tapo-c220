@@ -44,9 +44,13 @@
   li .row { justify-content: space-between; }
   a { color: var(--accent); }
   .mono { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
-  .segments { max-height: 220px; overflow-y: auto; margin-top: 10px; display: grid; gap: 4px; }
-  .segments button { text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
-  .segments button.event { border-left: 3px solid var(--danger); }
+  .timeline { position: relative; height: 54px; margin-top: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); overflow: hidden; cursor: pointer; touch-action: none; user-select: none; }
+  .timeline .seg { position: absolute; top: 18px; height: 22px; background: var(--accent); opacity: .55; min-width: 1px; }
+  .timeline .seg.event { background: var(--danger); opacity: .8; }
+  .timeline .tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line); padding-left: 3px; font: 10px ui-monospace, monospace; color: var(--muted); pointer-events: none; }
+  .timeline .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text); pointer-events: none; display: none; }
+  .timeline .hover { position: absolute; bottom: 0; font: 10px ui-monospace, monospace; background: var(--panel); padding: 0 3px; pointer-events: none; display: none; }
+  #sd-screen { display: none; }
   input[type=datetime-local], input[type=number] { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; }
   #message { min-height: 1.5em; font-size: 12px; color: var(--muted); margin-left: auto; }
   #message.error { color: var(--danger); }
@@ -85,19 +89,29 @@
       <ul id="recordings"></ul>
     </section>
     <section>
-      <h2>microSD の録画（カメラ本体の録画から、一部を取り出して上の一覧に保存）</h2>
+      <h2>microSD の録画（カメラ本体の録画を再生する、一部を上の一覧に保存する）</h2>
       <div class="row">
         <select id="sd-day" aria-label="録画のある日"></select>
         <span id="sd-status" class="mono"></span>
       </div>
-      <div class="segments" id="sd-segments"></div>
+      <div class="screen" id="sd-screen" style="margin-top:10px"><video id="sd-video" autoplay controls muted playsinline></video></div>
+      <div class="timeline" id="sd-timeline" title="押した時刻から再生する"><div class="head" id="sd-head"></div><div class="hover" id="sd-hover"></div></div>
       <div class="row">
-        <label for="sd-start">開始</label><input id="sd-start" type="datetime-local" step="1">
+        <button id="sd-earlier" aria-label="前へ">◀</button>
+        <select id="sd-zoom" aria-label="表示する幅">
+          <option value="86400">24時間</option><option value="21600">6時間</option><option value="3600" selected>1時間</option><option value="600">10分</option>
+        </select>
+        <button id="sd-later" aria-label="次へ">▶</button>
+        <button id="sd-play-stop" disabled>■ 再生を止める</button>
+        <span id="sd-position" class="mono">タイムラインを押すと、その時刻から再生する</span>
+      </div>
+      <div class="row">
+        <label for="sd-start">保存の開始</label><input id="sd-start" type="datetime-local" step="1">
         <label for="sd-seconds">長さ（秒）</label><input id="sd-seconds" type="number" min="1" max="3600" value="60" style="width:80px">
-        <button id="sd-export">取り出す</button>
+        <button id="sd-export">MP4 に保存</button>
         <button id="sd-cancel" disabled>■ 止める</button>
       </div>
-      <p class="mono" id="sd-progress" style="margin:10px 0 0">録画は実時間の速さでしか届かない（60 秒ぶんの取り出しに約 60 秒かかる）。</p>
+      <p class="mono" id="sd-progress" style="margin:10px 0 0">保存は実時間の速さでしか進まない（60 秒ぶんに約 60 秒）。再生している間は保存できない。</p>
     </section>
   </div>
   <aside>
@@ -329,23 +343,120 @@ $("rec-stop").addEventListener("click", run(async () => {
 
 // --- microSD の録画 ---
 const clock = (t) => new Date(t * 1000).toLocaleTimeString("ja-JP", { hour12: false });
-const span = (s) => s >= 60 ? `${Math.floor(s / 60)}分${Math.round(s % 60)}秒` : `${Math.round(s)}秒`;
 function toLocalInput(t) {  // datetime-local の値（その場所の時刻）
   const d = new Date(t * 1000), pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+// タイムライン：選んだ日の区間を帯で描く。押した時刻から WebRTC で再生し、再生している位置に線を動かす
+const sd = { segments: [], from: 0, span: 3600, peer: null, id: 0, timer: null, position: null };
+const stamp = (t) => new Date(t * 1000).toLocaleString("ja-JP", { hour12: false });
+
+function drawTimeline() {
+  const line = $("sd-timeline"), to = sd.from + sd.span;
+  line.querySelectorAll(".seg, .tick").forEach((e) => e.remove());
+  const step = sd.span > 43200 ? 7200 : sd.span > 7200 ? 3600 : sd.span > 1800 ? 600 : 60;
+  for (let t = Math.ceil(sd.from / step) * step; t < to; t += step) {
+    const tick = Object.assign(document.createElement("div"), { className: "tick", textContent: clock(t).slice(0, 5) });
+    tick.style.left = `${(t - sd.from) / sd.span * 100}%`;
+    line.append(tick);
+  }
+  for (const segment of sd.segments) {
+    if (segment.end <= sd.from || segment.start >= to) continue;
+    const block = Object.assign(document.createElement("div"), { className: `seg ${segment.kind === "event" ? "event" : ""}` });
+    const left = Math.max(segment.start, sd.from), right = Math.min(segment.end, to);
+    block.style.left = `${(left - sd.from) / sd.span * 100}%`;
+    block.style.width = `${(right - left) / sd.span * 100}%`;
+    line.append(block);
+  }
+  drawHead();
+}
+function drawHead() {
+  const head = $("sd-head"), visible = sd.position !== null && sd.position >= sd.from && sd.position <= sd.from + sd.span;
+  head.style.display = visible ? "block" : "none";
+  if (visible) head.style.left = `${(sd.position - sd.from) / sd.span * 100}%`;
+}
+function showWindow(center) {  // center が真ん中に来るように、表示する範囲を決める
+  sd.span = Number($("sd-zoom").value);
+  sd.from = center - sd.span / 2;
+  drawTimeline();
+}
+const timeAt = (event) => { const box = $("sd-timeline").getBoundingClientRect(); return sd.from + (event.clientX - box.left) / box.width * sd.span; };
+
+async function stopSdPlay(tellServer = true) {
+  sd.id++;
+  clearTimeout(sd.timer);
+  sd.peer?.close();
+  sd.peer = null;
+  $("sd-video").srcObject = null;
+  $("sd-screen").style.display = "none";
+  $("sd-play-stop").disabled = true;
+  if (tellServer) await api("/api/sd/play/stop", { method: "POST" });
+}
+async function playSd(start) {
+  await stopSdPlay(false);  // サーバ側の前の再生は、次の要求が止める
+  const mine = sd.id, pc = sd.peer = new RTCPeerConnection();
+  sd.position = start;
+  $("sd-start").value = toLocalInput(start);
+  $("sd-screen").style.display = "grid";
+  $("sd-play-stop").disabled = false;
+  $("sd-position").textContent = `${stamp(start)} から読み込み中…`;
+  drawHead();
+  pc.addTransceiver("video", { direction: "recvonly" });
+  pc.addTransceiver("audio", { direction: "recvonly" });
+  const media = new MediaStream();
+  pc.addEventListener("track", (event) => { media.addTrack(event.track); $("sd-video").srcObject = media; });
+  await pc.setLocalDescription(await pc.createOffer());
+  if (pc.iceGatheringState !== "complete") {
+    await new Promise((resolve) => {
+      pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && resolve());
+      setTimeout(resolve, 3000);
+    });
+  }
+  if (mine !== sd.id) return;
+  const answer = await api("/api/sd/play", { json: { sdp: pc.localDescription.sdp, start } });
+  if (mine !== sd.id) return;
+  await pc.setRemoteDescription(answer);
+  followSd(mine);
+}
+async function followSd(mine) {  // 再生している位置を読み、線を動かす。表示の端まで来たら、範囲を進める
+  if (mine !== sd.id) return;
+  const state = await api("/api/sd/play").catch(() => null);
+  if (mine !== sd.id) return;
+  if (state?.position) {
+    sd.position = state.position;
+    $("sd-start").value = toLocalInput(state.position);
+    if (state.position > sd.from + sd.span * 0.95 || state.position < sd.from) showWindow(state.position + sd.span * 0.35);
+    else drawHead();
+  }
+  if (!state || !state.playing) {
+    $("sd-position").textContent = state?.error ? state.error : `${stamp(sd.position)} で終わった`;
+    $("sd-position").style.color = state?.error ? "var(--danger)" : "";
+    return stopSdPlay(false);
+  }
+  $("sd-position").style.color = "";
+  if (state.position > state.start) $("sd-position").textContent = `再生中 ${stamp(state.position)}`;
+  sd.timer = setTimeout(() => followSd(mine), 500);
+}
+$("sd-timeline").addEventListener("click", run((event) => playSd(Math.floor(timeAt(event)))));
+$("sd-timeline").addEventListener("pointermove", (event) => {
+  const hover = $("sd-hover"), box = $("sd-timeline").getBoundingClientRect();
+  hover.style.display = "block";
+  hover.textContent = clock(timeAt(event));
+  hover.style.left = `${Math.min(event.clientX - box.left + 6, box.width - 60)}px`;
+});
+$("sd-timeline").addEventListener("pointerleave", () => { $("sd-hover").style.display = "none"; });
+$("sd-zoom").addEventListener("change", () => showWindow(sd.position ?? sd.from + sd.span / 2));
+$("sd-earlier").addEventListener("click", () => { sd.from -= sd.span * 0.8; drawTimeline(); });
+$("sd-later").addEventListener("click", () => { sd.from += sd.span * 0.8; drawTimeline(); });
+$("sd-play-stop").addEventListener("click", run(async () => { await stopSdPlay(); $("sd-position").textContent = `${stamp(sd.position)} で止めた`; }));
+addEventListener("pagehide", () => sd.peer?.close());
+
 async function loadSdDay() {
   const day = $("sd-day").value;
   if (!day) return;
-  $("sd-segments").replaceChildren(Object.assign(document.createElement("span"), { className: "mono", textContent: "読み込み中…" }));
-  const list = await api(`/api/sd/segments?date=${day}`);
-  $("sd-segments").replaceChildren(...list.reverse().map((segment) => {
-    const length = segment.end - segment.start, kind = segment.kind === "event" ? "検知" : segment.kind === "continuous" ? "常時" : segment.kind;
-    const button = Object.assign(document.createElement("button"), { textContent: `${clock(segment.start)} 〜 ${clock(segment.end)}　${span(length)}　${kind}`, title: "この区間を「開始」と「長さ」に入れる" });
-    button.classList.toggle("event", segment.kind === "event");
-    button.addEventListener("click", () => { $("sd-start").value = toLocalInput(segment.start); $("sd-seconds").value = Math.min(3600, Math.max(1, Math.round(length))); });
-    return button;
-  }));
+  sd.segments = await api(`/api/sd/segments?date=${day}`);
+  if (sd.segments.length) showWindow(sd.segments[sd.segments.length - 1].end - Number($("sd-zoom").value) * 0.4);  // いちばん新しい録画のあたり
+  else drawTimeline();
 }
 async function loadSd() {
   const info = await api("/api/sd");
