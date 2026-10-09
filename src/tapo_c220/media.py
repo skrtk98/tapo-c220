@@ -3,7 +3,7 @@
 C220 で実測したこと（ファームウェア 1.3.1）：
 
 - `stream1` は H.264 2560×1440、`stream2` は H.264 640×360、`stream8` は MJPEG 640×360（ONVIF の profile_3）だが、
-  毎秒1枚ほどしか更新されず、同じ画像を繰り返し送ってくる。
+  毎秒1枚ほどしか更新されず、同じ画像を繰り返し送ってくる（約 25Mbps）。Chromium ではその JPEG が灰色にしか描かれない。使っていない。
 - 音声はどれも G.711 A-law の 8kHz モノラル（ONVIF は 16kHz と答えるが、SDP と実際の中身は 8kHz）。
 - 認証は RTSP の Digest。カメラアカウントの ID とパスワードを使う。
 - 音声のトラックだけを SETUP すると、音声は届かない。映像と一緒に受け取って捨てる。
@@ -23,7 +23,7 @@ from urllib.parse import quote
 from .config import TapoConfig
 from .onvif import redact
 
-MAIN, SUB, MJPEG = "stream1", "stream2", "stream8"
+MAIN, SUB = "stream1", "stream2"
 
 _CHUNK = 64 * 1024
 _STOP_TIMEOUT = 10.0  # 録音・録画を止めるとき、ffmpeg がファイルを閉じ終えるのを待つ時間
@@ -109,18 +109,6 @@ async def _pipe(cfg: TapoConfig, argv: list[str]) -> AsyncIterator[bytes]:
             yield chunk
     finally:  # 読む側がやめたら（ブラウザを閉じた等）ffmpeg も止めて、カメラの接続を返す
         await process.kill()
-
-
-def live_mjpeg(cfg: TapoConfig, stream: str = SUB, *, fps: int = 10) -> AsyncIterator[bytes]:
-    """映像を JPEG の連続（`multipart/x-mixed-replace`）に変換して流す。音は無いが遅れが小さく、`<img>` で見られる。
-    区切り文字列は MJPEG_BOUNDARY。
-    カメラ自身の MJPEG（stream8）は使わない：毎秒1枚ほどしか更新されず、同じ画像を何十回も送り直してくる（約 25Mbps）うえ、
-    Chromium ではその JPEG が灰色にしか描かれない。"""
-    return _pipe(cfg, _input(cfg, stream) + ["-an", "-vf", f"fps={fps}", "-c:v", "mjpeg", "-q:v", "5",
-                                             "-f", "mpjpeg", "pipe:1"])
-
-
-MJPEG_BOUNDARY = "ffmpeg"  # ffmpeg の mpjpeg が使う区切り
 
 
 def live_audio(cfg: TapoConfig) -> AsyncIterator[bytes]:

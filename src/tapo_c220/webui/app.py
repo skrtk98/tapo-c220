@@ -17,7 +17,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
-from ..media import MJPEG_BOUNDARY
 from ..webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
@@ -113,11 +112,6 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         """WebRTC の合図。ブラウザの offer を受け取り、answer を返す（映像は H.264、音声は G.711 A-law のまま送る）。"""
         answer = await app.state.webrtc.answer(body.sdp, body.type, body.stream)
         return {"sdp": answer.sdp, "type": answer.type}
-
-    @app.get("/live.mjpg")
-    async def live_mjpeg() -> StreamingResponse:
-        return StreamingResponse(cam().live_mjpeg(), headers={"Cache-Control": "no-store"},
-                                 media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}")
 
     @app.get("/live.mp3")
     async def live_audio() -> StreamingResponse:

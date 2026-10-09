@@ -37,7 +37,7 @@ async with TapoC220() as cam:                 # .env を読む
     await cam.step("up", 0.05)                # 決まった量だけ動かす
     await cam.play("hello.mp3")               # カメラのスピーカーで鳴らす
     await rec.stop()
-    async for chunk in cam.live_mjpeg():      # JPEG の連続（multipart/x-mixed-replace）
+    async for chunk in cam.live_audio():      # マイクの音（MP3）
         ...
 ```
 
@@ -78,7 +78,7 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
   ONVIF は音声を 16kHz と答えるが、SDP も実際の中身も 8kHz。
 - `stream8` は MJPEG 640×360（ONVIF の profile_3「jpegStream」）。ただし5秒間に届いた約300枚のうち別の画像は5枚だけで、
   同じ画像を送り直してくる（約 25Mbps）。Chromium ではこの JPEG が灰色にしか描かれなかった。
-  このため WebUI の MJPEG 表示は、`stream2` を ffmpeg で JPEG に変換している。
+  このストリームは使っていない。
 - 同時に受けられるのは3接続まで。4本めは接続時に拒まれる（同じストリーム3本でも、別々のストリームでも同じ）。
 - 音声のトラックだけを SETUP すると（ffmpeg の `-allowed_media_types audio`）、何も届かず時間切れになる。
   録音するときも映像ごと受け取って捨てる。
@@ -133,8 +133,8 @@ RTSP にも ONVIF にも音声を送る経路が無いので、Tapo アプリが
   切れたら2秒後につなぎ直す。Chromium で両方の解像度の再生を確認した（遅れの実測はしていない）。
   カメラは High プロファイルで送ってくるが、ブラウザと取り決めるのは Baseline（`42001f`）のまま。Chromium は復号できたが、
   ほかのブラウザでは未確認。
-- 代わりの表示：MJPEG（640×360、音なし）、音だけ（MP3）。どちらも HTTP の応答を流し続けるだけで、遅れの制御や再接続は無い。
-- WebRTC・MJPEG・音だけの表示・録音・録画は、それぞれ RTSP を1本使う。カメラの上限は合わせて3本。
+- 映像なしで音だけ聞く表示もある（MP3 を HTTP の応答として流し続けるだけで、遅れの制御や再接続は無い）。
+- WebRTC・音だけの表示・録音・録画は、それぞれ RTSP を1本使う。カメラの上限は合わせて3本。
 - 首振り：押している間だけ動く（矢印キーでも可）か、1回押すと少し動くかを選べる。プリセットの保存・移動・削除。
 - 録音（WAV）・録画（MP4）：開始と停止、保存したファイルの再生・ダウンロード・削除。同時には1つ、最長1時間。
 - スピーカー：音声ファイルを送る、またはブラウザのマイクで録って送る（リアルタイムの通話ではない）。

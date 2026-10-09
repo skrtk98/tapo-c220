@@ -30,7 +30,7 @@
   button:disabled { opacity: .5; cursor: default; }
   button.on { background: var(--danger); border-color: var(--danger); color: #fff; }
   .screen { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 9; display: grid; place-items: center; margin-bottom: 10px; }
-  .screen img, .screen video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .screen p { color: #9aa3ad; margin: 0; }
   .pad { display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(3, 52px); gap: 6px; justify-content: center; }
   .pad button { font-size: 20px; padding: 0; touch-action: none; user-select: none; }
@@ -63,7 +63,6 @@
         <select id="mode" aria-label="映像の種類">
           <option value="rtc-sub">WebRTC 640×360（低遅延・音あり）</option>
           <option value="rtc-main">WebRTC 2560×1440（低遅延・音あり）</option>
-          <option value="mjpeg">MJPEG 640×360（音なし）</option>
           <option value="audio">音だけ</option>
           <option value="off">停止</option>
         </select>
@@ -172,15 +171,13 @@ function showLive() {
   clearTimeout(retry);
   peer?.close();
   peer = null;
-  for (const media of screen.querySelectorAll("img, video, audio")) { media.srcObject = null; media.removeAttribute("src"); media.load?.(); }  // 前の接続を閉じる
+  for (const media of screen.querySelectorAll("video, audio")) { media.srcObject = null; media.removeAttribute("src"); media.load?.(); }  // 前の接続を閉じる
   screen.replaceChildren();
   const stamp = Date.now();
   let element;
   if (mode.startsWith("rtc")) {
     element = Object.assign(document.createElement("video"), { autoplay: true, controls: true, muted: true, playsInline: true });
     startRtc(element, mode === "rtc-main" ? "stream1" : "stream2", mine).catch((e) => { if (mine === liveId) say(e.message, true); });
-  } else if (mode === "mjpeg") {
-    element = Object.assign(document.createElement("img"), { src: `/live.mjpg?${stamp}`, alt: "カメラの映像" });
   } else if (mode === "audio") {
     element = Object.assign(document.createElement("audio"), { src: `/live.mp3?${stamp}`, autoplay: true, controls: true });
   } else {
