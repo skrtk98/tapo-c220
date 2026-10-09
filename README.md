@@ -41,11 +41,19 @@ async with TapoC220() as cam:                 # .env を読む
         ...
 ```
 
+ブラウザへのライブ配信は `tapo_c220.webrtc.WebRtcSessions`（aiortc が要る。`[webui]` に含まれる）：
+
+```python
+sessions = WebRtcSessions(cam.cfg)
+answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの offer を渡し、answer.sdp を返す
+```
+
 | モジュール | 役割 |
 | --- | --- |
 | `tapo_c220.camera` | 窓口の `TapoC220`。向き（left / right / up / down）を画面の動きに合わせる |
 | `tapo_c220.onvif` | ONVIF の最小限のクライアント（SOAP を手で組む。依存は httpx だけ） |
 | `tapo_c220.media` | RTSP の受信と変換（ffmpeg）。静止画、ライブ配信、録音・録画 |
+| `tapo_c220.webrtc` | ライブ映像と音声を WebRTC でブラウザへ送る（aiortc） |
 | `tapo_c220.talk` | Tapo 独自の双方向音声（スピーカー） |
 | `tapo_c220.webui` | FastAPI の WebUI（`TapoC220` を HTTP から呼ぶだけ） |
 
@@ -114,8 +122,14 @@ RTSP にも ONVIF にも音声を送る経路が無いので、Tapo アプリが
 
 ## WebUI
 
-- ライブ映像：MJPEG（640×360、音なし）、H.264 + AAC の fragmented MP4（640×360 / 2560×1440、音あり）、音だけ（MP3）。
-  MP4 は `<video>` にそのまま流しているので、数秒の遅れがある。
+- ライブ映像：既定は WebRTC（640×360 / 2560×1440、音あり）。カメラの H.264 と G.711 A-law は WebRTC の標準のコーデックなので、
+  変換せずそのまま RTP に載せ替えている。合図は `POST /api/webrtc/offer` の1往復だけで、STUN/TURN は使わない（同じ LAN の中で使う前提）。
+  切れたら2秒後につなぎ直す。Chromium で両方の解像度の再生を確認した（遅れの実測はしていない）。
+  カメラは High プロファイルで送ってくるが、ブラウザと取り決めるのは Baseline（`42001f`）のまま。Chromium は復号できたが、
+  ほかのブラウザでは未確認。
+- 代わりの表示：MJPEG（640×360、音なし）、fragmented MP4 を `<video>` に流し続けるもの（音あり、数秒遅れ）、音だけ（MP3）。
+  どれも HTTP の応答を流し続けるだけで、遅れの制御や再接続は無い。
+- WebRTC・MP4・MJPEG・録音・録画は、それぞれ RTSP を1本使う。カメラの上限は合わせて3本。
 - 首振り：押している間だけ動く（矢印キーでも可）か、1回押すと少し動くかを選べる。プリセットの保存・移動・削除。
 - 録音（WAV）・録画（MP4）：開始と停止、保存したファイルの再生・ダウンロード・削除。同時には1つ、最長1時間。
 - スピーカー：音声ファイルを送る、またはブラウザのマイクで録って送る（リアルタイムの通話ではない）。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import re
 import tempfile
@@ -17,9 +18,10 @@ from pydantic import BaseModel, Field
 
 from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
 from ..media import MJPEG_BOUNDARY
+from ..webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
-_NAME = re.compile(r"^[0-9]{8}-[0-9]{6}\.(wav|mp4)$")
+_NAME = re.compile(r"^[0-9]{8}-[0-9]{6}(-[0-9]{3})?\.(wav|mp4)$")
 _MOVE_TIMEOUT = 5.0             # 押しっぱなしの首振りを、止める指示が届かなくてもカメラ側で止める時間（秒）
 _RECORD_MAX_SECONDS = 3600.0    # 止め忘れた録音・録画を終える時間
 _UPLOAD_MAX = 20 * 1024 * 1024  # スピーカーで鳴らす音声の大きさの上限
@@ -44,6 +46,12 @@ class PresetName(BaseModel):
     name: str = Field(min_length=1, max_length=32)
 
 
+class Offer(BaseModel):
+    sdp: str = Field(max_length=65536)
+    type: str = Field("offer", pattern="^offer$")
+    stream: str = Field(SUB, pattern="^stream[12]$")
+
+
 class RecordStart(BaseModel):
     kind: str = Field("audio", pattern="^(audio|video)$")
     stream: str = Field(MAIN, pattern="^stream[12]$")
@@ -52,11 +60,14 @@ class RecordStart(BaseModel):
 def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None) -> FastAPI:
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
+    record_lock = asyncio.Lock()  # 開始と停止を1つずつ行う（同時の開始で ffmpeg を2本起こさない）
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.camera = camera or TapoC220()
+        app.state.webrtc = WebRtcSessions(app.state.camera.cfg)
         yield
+        await app.state.webrtc.close()
         if state["recording"] is not None:
             try:
                 await state["recording"].stop()
@@ -97,6 +108,12 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
             raise HTTPException(400, "stream は stream1 か stream2")
         return Response(await cam().snapshot(stream), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
+    @app.post("/api/webrtc/offer")
+    async def webrtc_offer(body: Offer) -> dict:
+        """WebRTC の合図。ブラウザの offer を受け取り、answer を返す（映像は H.264、音声は G.711 A-law のまま送る）。"""
+        answer = await app.state.webrtc.answer(body.sdp, body.type, body.stream)
+        return {"sdp": answer.sdp, "type": answer.type}
+
     @app.get("/live.mp4")
     async def live_mp4(stream: str = MAIN) -> StreamingResponse:
         if stream not in (MAIN, SUB):
@@ -129,20 +146,24 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
 
     @app.post("/api/record/start")
     async def record_start(body: RecordStart) -> dict:
-        if recording_status()["recording"]:
-            raise HTTPException(409, "すでに記録している")
-        name = time.strftime("%Y%m%d-%H%M%S") + (".wav" if body.kind == "audio" else ".mp4")
-        state["recording"] = await cam().record(directory / name, kind=body.kind, stream=body.stream,
-                                                max_seconds=_RECORD_MAX_SECONDS)
-        return recording_status()
+        async with record_lock:
+            if recording_status()["recording"]:
+                raise HTTPException(409, "すでに記録している")
+            now = time.time()  # ミリ秒までを名前に入れる（同じ秒のうちに録り直しても、前のファイルを上書きしない）
+            name = (time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + f"-{int(now * 1000) % 1000:03d}"
+                    + (".wav" if body.kind == "audio" else ".mp4"))
+            state["recording"] = await cam().record(directory / name, kind=body.kind, stream=body.stream,
+                                                    max_seconds=_RECORD_MAX_SECONDS)
+            return recording_status()
 
     @app.post("/api/record/stop")
     async def record_stop() -> dict:
-        recording, state["recording"] = state["recording"], None
-        if recording is None:
-            raise HTTPException(409, "記録していない")
-        path = await recording.stop()
-        return {"name": path.name, "bytes": path.stat().st_size}
+        async with record_lock:
+            recording, state["recording"] = state["recording"], None
+            if recording is None:
+                raise HTTPException(409, "記録していない")
+            path = await recording.stop()
+            return {"name": path.name, "bytes": path.stat().st_size}
 
     def recorded(name: str) -> Path:
         path = directory / name

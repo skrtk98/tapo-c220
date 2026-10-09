@@ -28,9 +28,12 @@ async def _run(args: argparse.Namespace) -> None:
             case "play":
                 print(f"{await cam.play(args.path, audio_filter=args.filter):.1f} 秒ぶん鳴らした")
             case "move":
-                await cam.move(args.direction, args.speed)
-                await asyncio.sleep(args.seconds)
-                await cam.stop()
+                # Ctrl-C で中断されても止める。止める指示が届かなくても、カメラ側の時間切れで止まるようにしておく
+                await cam.move(args.direction, args.speed, timeout=args.seconds + 1)
+                try:
+                    await asyncio.sleep(args.seconds)
+                finally:
+                    await cam.stop()
             case "step":
                 await cam.step(args.direction, args.amount)
             case "goto":
@@ -68,6 +71,8 @@ def main() -> None:
         asyncio.run(_run(parser.parse_args()))
     except (OnvifError, MediaError, TalkError, RuntimeError) as e:
         sys.exit(f"失敗: {e}")
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

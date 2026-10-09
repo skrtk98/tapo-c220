@@ -61,9 +61,11 @@
       <div class="screen" id="screen"><p>停止中</p></div>
       <div class="row">
         <select id="mode" aria-label="映像の種類">
-          <option value="mjpeg">MJPEG 640×360（低遅延・音なし）</option>
-          <option value="mp4-sub">H.264 640×360（音あり・数秒遅れ）</option>
-          <option value="mp4-main">H.264 2560×1440（音あり・数秒遅れ）</option>
+          <option value="rtc-sub">WebRTC 640×360（低遅延・音あり）</option>
+          <option value="rtc-main">WebRTC 2560×1440（低遅延・音あり）</option>
+          <option value="mjpeg">MJPEG 640×360（音なし）</option>
+          <option value="mp4-sub">MP4 640×360（音あり・数秒遅れ）</option>
+          <option value="mp4-main">MP4 2560×1440（音あり・数秒遅れ）</option>
           <option value="audio">音だけ</option>
           <option value="off">停止</option>
         </select>
@@ -137,13 +139,49 @@ const run = (work) => async (...args) => { try { await work(...args); } catch (e
 const size = (bytes) => bytes > 1e6 ? (bytes / 1e6).toFixed(1) + " MB" : Math.ceil(bytes / 1e3) + " kB";
 
 // --- ライブ映像 ---
+let peer = null, retry = null, liveId = 0;
+
+// WebRTC：offer を作り、ICE の候補を集め終えてからサーバへ送る（合図は1往復だけ）
+async function startRtc(video, stream, mine) {
+  const pc = peer = new RTCPeerConnection();
+  pc.addTransceiver("video", { direction: "recvonly" });
+  pc.addTransceiver("audio", { direction: "recvonly" });
+  pc.addEventListener("track", (event) => { video.srcObject = event.streams[0] || new MediaStream([event.track]); });
+  pc.addEventListener("connectionstatechange", () => {
+    if (mine !== liveId) return;
+    if (pc.connectionState === "connected") say("");
+    if (["failed", "disconnected"].includes(pc.connectionState)) {  // 切れたら、少し待ってつなぎ直す
+      say("映像が切れた。つなぎ直す…", true);
+      clearTimeout(retry);
+      retry = setTimeout(showLive, 2000);
+    }
+  });
+  await pc.setLocalDescription(await pc.createOffer());
+  if (pc.iceGatheringState !== "complete") {
+    await new Promise((resolve) => {
+      pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && resolve());
+      setTimeout(resolve, 3000);
+    });
+  }
+  if (mine !== liveId) return;
+  const answer = await api("/api/webrtc/offer", { json: { sdp: pc.localDescription.sdp, type: "offer", stream } });
+  if (mine !== liveId) return;  // 待っている間に別の表示へ切り替えられた（この接続は、ICE が通らずサーバ側で閉じられる）
+  await pc.setRemoteDescription(answer);
+}
+
 function showLive() {
-  const screen = $("screen"), mode = $("mode").value;
-  for (const media of screen.querySelectorAll("img, video, audio")) { media.removeAttribute("src"); media.load?.(); }  // 前の接続を閉じる
+  const screen = $("screen"), mode = $("mode").value, mine = ++liveId;
+  clearTimeout(retry);
+  peer?.close();
+  peer = null;
+  for (const media of screen.querySelectorAll("img, video, audio")) { media.srcObject = null; media.removeAttribute("src"); media.load?.(); }  // 前の接続を閉じる
   screen.replaceChildren();
   const stamp = Date.now();
   let element;
-  if (mode === "mjpeg") {
+  if (mode.startsWith("rtc")) {
+    element = Object.assign(document.createElement("video"), { autoplay: true, controls: true, muted: true, playsInline: true });
+    startRtc(element, mode === "rtc-main" ? "stream1" : "stream2", mine).catch((e) => { if (mine === liveId) say(e.message, true); });
+  } else if (mode === "mjpeg") {
     element = Object.assign(document.createElement("img"), { src: `/live.mjpg?${stamp}`, alt: "カメラの映像" });
   } else if (mode.startsWith("mp4")) {
     const stream = mode === "mp4-main" ? "stream1" : "stream2";
@@ -156,6 +194,7 @@ function showLive() {
   element.addEventListener("error", () => say("映像を受け取れない（同時に見られるのは3接続まで）", true));
   screen.append(element);
 }
+addEventListener("pagehide", () => peer?.close());
 $("mode").addEventListener("change", showLive);
 $("reload").addEventListener("click", showLive);
 
@@ -179,7 +218,7 @@ async function trackPosition() {
     last = text;
   }
 }
-let moving = null, keepAlive = null;
+let moving = null, keepAlive = null, moveId = 0;
 
 async function startMove(direction, button) {
   const value = Number($("speed").value);
@@ -187,13 +226,20 @@ async function startMove(direction, button) {
     showPosition(await api("/api/ptz/step", { json: { direction, amount: value * 0.1 } }));
     return;
   }
+  const mine = ++moveId;
   moving = direction;
   button?.classList.add("active");
   const send = () => api("/api/ptz/move", { json: { direction, speed: value } });
   await send();
+  if (mine !== moveId) {
+    // 最初の指示が届く前に離された。停止が移動より先にカメラへ着いたかもしれないので、もう一度止める
+    if (moving === null) showPosition(await api("/api/ptz/stop", { method: "POST" }));
+    return;
+  }
   keepAlive = setInterval(run(send), 3000);  // カメラ側の自動停止（5秒）より短い間隔で送り直す
 }
 async function stopMove() {
+  moveId++;
   clearInterval(keepAlive);
   document.querySelectorAll(".pad .active").forEach((b) => b.classList.remove("active"));
   if (moving === null) return;
@@ -204,7 +250,7 @@ for (const button of document.querySelectorAll(".pad [data-dir]")) {
   button.addEventListener("pointerdown", run(async (event) => { button.setPointerCapture(event.pointerId); await startMove(button.dataset.dir, button); }));
   for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, run(stopMove));
 }
-$("ptz-stop").addEventListener("click", run(async () => { moving = null; clearInterval(keepAlive); showPosition(await api("/api/ptz/stop", { method: "POST" })); }));
+$("ptz-stop").addEventListener("click", run(async () => { moveId++; moving = null; clearInterval(keepAlive); showPosition(await api("/api/ptz/stop", { method: "POST" })); }));
 const KEYS = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
 const typing = (event) => ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName);
 addEventListener("keydown", run(async (event) => {

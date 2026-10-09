@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 webui = [
+    "aiortc>=1.9",
     "fastapi>=0.115",
     "python-multipart>=0.0.20",
     "uvicorn>=0.34",
