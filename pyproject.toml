@@ -1,0 +1,38 @@
+[project]
+name = "tapo-c220-survey"
+version = "0.1.0"
+description = "TP-Link Tapo C220 を RTSP / ONVIF (Profile S) / 独自の双方向音声で操作するライブラリと、その薄い WebUI"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+webui = [
+    "fastapi>=0.115",
+    "python-multipart>=0.0.20",
+    "uvicorn>=0.34",
+]
+
+[project.scripts]
+tapo-c220 = "tapo_c220.cli:main"
+tapo-c220-web = "tapo_c220.webui.app:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=1.0",
+    "tapo-c220-survey[webui]",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "tapo_c220"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
