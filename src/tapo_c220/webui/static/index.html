@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tapo C220</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: light-dark(#f4f5f7, #15171a); --panel: light-dark(#fff, #1e2125); --line: light-dark(#d9dce1, #33383f);
+    --text: light-dark(#1c1f23, #e6e8eb); --muted: light-dark(#667085, #98a1ad);
+    --accent: light-dark(#0b6bcb, #5aa9f5); --danger: light-dark(#c62828, #f2776f);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 17px; margin: 0; }
+  h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  #device { color: var(--muted); font-size: 12px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; padding: 16px; max-width: 1280px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  aside { display: grid; gap: 16px; align-content: start; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 10px; }
+  button, select, input[type=text] { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.on { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .screen { position: relative; background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 16 / 9; display: grid; place-items: center; margin-bottom: 10px; }
+  .screen img, .screen video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen p { color: #9aa3ad; margin: 0; }
+  .pad { display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(3, 52px); gap: 6px; justify-content: center; }
+  .pad button { font-size: 20px; padding: 0; touch-action: none; user-select: none; }
+  .pad button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pad .stop { font-size: 12px; }
+  label { color: var(--muted); font-size: 12px; }
+  input[type=range] { flex: 1; min-width: 80px; }
+  ul { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+  li { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; font-size: 12px; }
+  li audio, li video { width: 100%; }
+  li .row { justify-content: space-between; }
+  a { color: var(--accent); }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  #message { min-height: 1.5em; font-size: 12px; color: var(--muted); margin-left: auto; }
+  #message.error { color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tapo C220</h1>
+  <span id="device">接続中…</span>
+  <span id="message" role="status"></span>
+</header>
+<main>
+  <div style="display:grid;gap:16px;align-content:start">
+    <section>
+      <h2>ライブ映像</h2>
+      <div class="screen" id="screen"><p>停止中</p></div>
+      <div class="row">
+        <select id="mode" aria-label="映像の種類">
+          <option value="mjpeg">MJPEG 640×360（低遅延・音なし）</option>
+          <option value="mp4-sub">H.264 640×360（音あり・数秒遅れ）</option>
+          <option value="mp4-main">H.264 2560×1440（音あり・数秒遅れ）</option>
+          <option value="audio">音だけ</option>
+          <option value="off">停止</option>
+        </select>
+        <button id="reload">つなぎ直す</button>
+        <a id="snapshot" href="/api/snapshot.jpg" target="_blank" rel="noopener">静止画（2560×1440）</a>
+      </div>
+    </section>
+    <section>
+      <h2>録音・録画（カメラのマイクと映像を、このサーバに保存）</h2>
+      <div class="row">
+        <button id="rec-audio">● 録音（WAV）</button>
+        <button id="rec-video">● 録画（MP4）</button>
+        <button id="rec-stop" disabled>■ 止める</button>
+        <span id="rec-status" class="mono"></span>
+      </div>
+      <ul id="recordings"></ul>
+    </section>
+  </div>
+  <aside>
+    <section>
+      <h2>首振り（ONVIF PTZ）</h2>
+      <div class="pad">
+        <span></span><button data-dir="up" aria-label="上">▲</button><span></span>
+        <button data-dir="left" aria-label="左">◀</button><button class="stop" id="ptz-stop">停止</button><button data-dir="right" aria-label="右">▶</button>
+        <span></span><button data-dir="down" aria-label="下">▼</button><span></span>
+      </div>
+      <div class="row">
+        <label for="ptz-mode">動かし方</label>
+        <select id="ptz-mode">
+          <option value="hold">押している間だけ動く</option>
+          <option value="step">1回押すと少し動く</option>
+        </select>
+      </div>
+      <div class="row"><label for="speed">速さ・量</label><input id="speed" type="range" min="0.1" max="1" step="0.1" value="0.5"></div>
+      <div class="row mono" id="position">pan – / tilt –</div>
+      <div class="row">
+        <input id="preset-name" type="text" placeholder="プリセット名" maxlength="32" style="flex:1;min-width:0">
+        <button id="preset-save">今の向きを保存</button>
+      </div>
+      <ul id="presets"></ul>
+    </section>
+    <section>
+      <h2>カメラのスピーカーで鳴らす</h2>
+      <div class="row"><input id="file" type="file" accept="audio/*,video/*" style="flex:1;min-width:0"></div>
+      <div class="row"><label for="gain">音量</label><input id="gain" type="range" min="-20" max="20" step="1" value="0"><span id="gain-value" class="mono">0 dB</span></div>
+      <div class="row">
+        <button id="play">ファイルを鳴らす</button>
+        <button id="mic">🎙 マイクで話す</button>
+      </div>
+      <p class="mono" style="margin:10px 0 0">Tapo 独自の双方向音声（8800 番）。鳴り終わるまで次は送れない。</p>
+    </section>
+  </aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const say = (text, error = false) => { $("message").textContent = text; $("message").classList.toggle("error", error); };
+
+async function api(path, options = {}) {
+  if (options.json !== undefined) {
+    options = { ...options, method: options.method || "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(options.json) };
+  }
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = Array.isArray(data.detail) ? data.detail.map((d) => d.msg).join(" / ") : data.detail;
+    throw new Error(detail || `HTTP ${response.status}`);
+  }
+  return data;
+}
+const run = (work) => async (...args) => { try { await work(...args); } catch (e) { say(e.message, true); } };
+const size = (bytes) => bytes > 1e6 ? (bytes / 1e6).toFixed(1) + " MB" : Math.ceil(bytes / 1e3) + " kB";
+
+// --- ライブ映像 ---
+function showLive() {
+  const screen = $("screen"), mode = $("mode").value;
+  for (const media of screen.querySelectorAll("img, video, audio")) { media.removeAttribute("src"); media.load?.(); }  // 前の接続を閉じる
+  screen.replaceChildren();
+  const stamp = Date.now();
+  let element;
+  if (mode === "mjpeg") {
+    element = Object.assign(document.createElement("img"), { src: `/live.mjpg?${stamp}`, alt: "カメラの映像" });
+  } else if (mode.startsWith("mp4")) {
+    const stream = mode === "mp4-main" ? "stream1" : "stream2";
+    element = Object.assign(document.createElement("video"), { src: `/live.mp4?stream=${stream}&${stamp}`, autoplay: true, controls: true, muted: true, playsInline: true });
+  } else if (mode === "audio") {
+    element = Object.assign(document.createElement("audio"), { src: `/live.mp3?${stamp}`, autoplay: true, controls: true });
+  } else {
+    element = Object.assign(document.createElement("p"), { textContent: "停止中" });
+  }
+  element.addEventListener("error", () => say("映像を受け取れない（同時に見られるのは3接続まで）", true));
+  screen.append(element);
+}
+$("mode").addEventListener("change", showLive);
+$("reload").addEventListener("click", showLive);
+
+// --- 首振り ---
+let tracking = 0;
+function showPosition(p) {
+  $("position").textContent = `pan ${p.pan.toFixed(3)} / tilt ${p.tilt.toFixed(3)}`;
+  trackPosition();
+}
+// 移動の指示はすぐ戻り、カメラは動き終えたことを知らせない。位置が変わらなくなるまで読み直す
+async function trackPosition() {
+  const mine = ++tracking;
+  let last = "";
+  for (let i = 0; i < 40 && mine === tracking; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const p = await api("/api/ptz").catch(() => null);
+    if (!p || mine !== tracking) return;
+    const text = `pan ${p.pan.toFixed(3)} / tilt ${p.tilt.toFixed(3)}`;
+    $("position").textContent = text;
+    if (text === last) return;
+    last = text;
+  }
+}
+let moving = null, keepAlive = null;
+
+async function startMove(direction, button) {
+  const value = Number($("speed").value);
+  if ($("ptz-mode").value === "step") {
+    showPosition(await api("/api/ptz/step", { json: { direction, amount: value * 0.1 } }));
+    return;
+  }
+  moving = direction;
+  button?.classList.add("active");
+  const send = () => api("/api/ptz/move", { json: { direction, speed: value } });
+  await send();
+  keepAlive = setInterval(run(send), 3000);  // カメラ側の自動停止（5秒）より短い間隔で送り直す
+}
+async function stopMove() {
+  clearInterval(keepAlive);
+  document.querySelectorAll(".pad .active").forEach((b) => b.classList.remove("active"));
+  if (moving === null) return;
+  moving = null;
+  showPosition(await api("/api/ptz/stop", { method: "POST" }));
+}
+for (const button of document.querySelectorAll(".pad [data-dir]")) {
+  button.addEventListener("pointerdown", run(async (event) => { button.setPointerCapture(event.pointerId); await startMove(button.dataset.dir, button); }));
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, run(stopMove));
+}
+$("ptz-stop").addEventListener("click", run(async () => { moving = null; clearInterval(keepAlive); showPosition(await api("/api/ptz/stop", { method: "POST" })); }));
+const KEYS = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+const typing = (event) => ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName);
+addEventListener("keydown", run(async (event) => {
+  if (!KEYS[event.key] || typing(event) || event.repeat) return;
+  event.preventDefault();
+  if (moving === null) await startMove(KEYS[event.key], document.querySelector(`[data-dir=${KEYS[event.key]}]`));
+}));
+addEventListener("keyup", run(async (event) => { if (KEYS[event.key] && !typing(event)) await stopMove(); }));
+addEventListener("blur", run(stopMove));
+
+async function loadPresets() {
+  const list = await api("/api/ptz/presets");
+  $("presets").replaceChildren(...list.map((preset) => {
+    const item = document.createElement("li"), row = Object.assign(document.createElement("div"), { className: "row" });
+    const go = Object.assign(document.createElement("button"), { textContent: preset.name || preset.token });
+    go.addEventListener("click", run(async () => { await api(`/api/ptz/presets/${encodeURIComponent(preset.token)}/goto`, { method: "POST" }); showPosition(await api("/api/ptz")); }));
+    const remove = Object.assign(document.createElement("button"), { textContent: "削除" });
+    remove.addEventListener("click", run(async () => { await api(`/api/ptz/presets/${encodeURIComponent(preset.token)}`, { method: "DELETE" }); await loadPresets(); }));
+    row.append(go, remove); item.append(row);
+    return item;
+  }));
+}
+$("preset-save").addEventListener("click", run(async () => {
+  const name = $("preset-name").value.trim();
+  if (!name) return say("プリセット名を入れること", true);
+  await api("/api/ptz/presets", { json: { name } });
+  $("preset-name").value = "";
+  await loadPresets();
+  say(`プリセット「${name}」を保存した`);
+}));
+
+// --- 録音・録画 ---
+let recTimer = null;
+async function showRecording() {
+  const status = await api("/api/record");
+  $("rec-audio").disabled = $("rec-video").disabled = status.recording;
+  $("rec-stop").disabled = !status.recording;
+  $("rec-stop").classList.toggle("on", status.recording);
+  $("rec-status").textContent = status.recording ? `${status.kind === "audio" ? "録音" : "録画"}中 ${Math.floor(status.seconds)} 秒` : "";
+  clearTimeout(recTimer);
+  if (status.recording) recTimer = setTimeout(run(showRecording), 1000);
+}
+async function loadRecordings() {
+  const list = await api("/api/recordings");
+  $("recordings").replaceChildren(...list.map((file) => {
+    const item = document.createElement("li"), row = Object.assign(document.createElement("div"), { className: "row" });
+    const url = `/recordings/${file.name}`;
+    const link = Object.assign(document.createElement("a"), { href: url, download: file.name, textContent: `${file.name}（${size(file.bytes)}）` });
+    const remove = Object.assign(document.createElement("button"), { textContent: "削除" });
+    remove.addEventListener("click", run(async () => { await api(`/api/recordings/${file.name}`, { method: "DELETE" }); await loadRecordings(); }));
+    row.append(link, remove);
+    const player = Object.assign(document.createElement(file.name.endsWith(".mp4") ? "video" : "audio"), { src: url, controls: true, preload: "none" });
+    item.append(row, player);
+    return item;
+  }));
+}
+const startRecording = (kind) => run(async () => { await api("/api/record/start", { json: { kind } }); await showRecording(); say(""); });
+$("rec-audio").addEventListener("click", startRecording("audio"));
+$("rec-video").addEventListener("click", startRecording("video"));
+$("rec-stop").addEventListener("click", run(async () => {
+  try { const file = await api("/api/record/stop", { method: "POST" }); say(`${file.name} を保存した`); }
+  finally { await showRecording(); await loadRecordings(); }
+}));
+
+// --- スピーカー ---
+$("gain").addEventListener("input", () => { $("gain-value").textContent = `${$("gain").value} dB`; });
+async function sendAudio(blob, name) {
+  const form = new FormData();
+  form.append("file", blob, name);
+  $("play").disabled = $("mic").disabled = true;
+  say("カメラのスピーカーで再生中…");
+  try {
+    const result = await api(`/api/speaker/play?gain_db=${$("gain").value}`, { method: "POST", body: form });
+    say(`${result.seconds} 秒ぶん鳴らした`);
+  } finally { $("play").disabled = $("mic").disabled = false; }
+}
+$("play").addEventListener("click", run(async () => {
+  const file = $("file").files[0];
+  if (!file) return say("音声ファイルを選ぶこと", true);
+  await sendAudio(file, file.name);
+}));
+let recorder = null;
+$("mic").addEventListener("click", run(async () => {
+  if (recorder) return recorder.stop();
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("このページではマイクを使えない（localhost か HTTPS で開くこと）");
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const chunks = [];
+  recorder = new MediaRecorder(stream);
+  recorder.addEventListener("dataavailable", (event) => chunks.push(event.data));
+  recorder.addEventListener("stop", run(async () => {
+    const type = recorder.mimeType;
+    stream.getTracks().forEach((track) => track.stop());
+    recorder = null;
+    $("mic").textContent = "🎙 マイクで話す"; $("mic").classList.remove("on");
+    await sendAudio(new Blob(chunks, { type }), type.includes("ogg") ? "mic.ogg" : type.includes("mp4") ? "mic.mp4" : "mic.webm");
+  }));
+  recorder.start();
+  $("mic").textContent = "■ 話し終えて送る"; $("mic").classList.add("on");
+  say("録音中。話し終えたらもう一度押す");
+}));
+
+// --- 起動 ---
+run(async () => {
+  const info = await api("/api/info");
+  $("device").textContent = `${info.device.Model} / FW ${info.device.FirmwareVersion}`;
+  showPosition(info.position);
+  if (!info.speaker) { $("play").disabled = $("mic").disabled = true; say("TAPO_CLOUD_PASSWORD が無いので、スピーカーは使えない"); }
+  await Promise.all([loadPresets(), showRecording(), loadRecordings()]);
+})();
+showLive();
+</script>
+</body>
+</html>
