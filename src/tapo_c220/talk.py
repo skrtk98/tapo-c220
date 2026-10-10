@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 import time
+
+try:  # 送ったうち、まだ相手に届いていない量を調べる（Linux など）
+    import fcntl
+    import termios
+except ImportError:
+    fcntl = termios = None
 
 from .tapo.stream import Connection, StreamError, TapoStream
 
@@ -23,6 +30,7 @@ _PES_PID = 0x100
 _PMT_PID = 0x1000
 _MAX_REPLY = 64 * 1024  # 開始の応答として受け取る大きさの上限
 _DRAIN_TIMEOUT = 5.0    # 送信が1回詰まって待てる時間（カメラが受信を止めたとき）
+_BACKLOG_SECONDS = 3.0  # 送ったのにカメラが受け取っていない音声が、これだけ溜まったら諦める
 _SILENCE = b"\xd5"      # A-law の 0
 
 
@@ -123,6 +131,7 @@ class TapoTalk:
         self._session = ""
         self._mux = Muxer()
         self._drain: asyncio.Task | None = None
+        self._written = 0  # 1回（20ms ぶん）に書いたバイト数
         # 最初の音声がカメラ向けの送信に通ったか。カメラからの受信確認は無いので、鳴ったことの保証ではない
         self.sent = False
 
@@ -175,12 +184,26 @@ class TapoTalk:
         except (OSError, asyncio.CancelledError):
             pass
 
-    def _write(self, body: bytes) -> None:
-        self._connection.part("audio/mp2t", body, f"X-If-Encrypt: 0\r\nX-Session-Id: {self._session}\r\n")
+    def _write(self, body: bytes) -> int:
+        return self._connection.part("audio/mp2t", body, f"X-If-Encrypt: 0\r\nX-Session-Id: {self._session}\r\n")
+
+    def backlog(self) -> float:
+        """送ったのに、まだカメラが受け取っていない（TCP の確認が返っていない）音声の長さ（秒）。分からなければ 0。
+        カメラが受信を止めても、OS の送信バッファが埋まるまで（数十秒〜数分ぶん）書き込みは成功し続けるので、これで気づく。"""
+        transport = self._connection.writer.transport
+        pending = transport.get_write_buffer_size()
+        sock = transport.get_extra_info("socket")
+        if fcntl is not None and sock is not None and hasattr(termios, "TIOCOUTQ"):
+            try:
+                pending += struct.unpack("i", fcntl.ioctl(sock.fileno(), termios.TIOCOUTQ, b"\0\0\0\0"))[0]
+            except OSError:
+                pass
+        return pending / self._written * _CHUNK / _RATE if self._written else 0.0
 
     async def send(self, alaw: bytes) -> None:
         """A-law（8kHz）の音声を、実時間の速さで送る。送り終えるまで戻らない。
-        カメラが受信を止めたら諦める（送信ごとの期限と、全体の期限＝音声の長さ＋余裕）。"""
+        カメラが接続を閉じたり、受信を止めたりしたら TalkError（鳴っていないのに、鳴らしたことにしない）。
+        分かるのは「カメラが受け取ったか」まで。受け取った音を実際に鳴らしたかは、この経路では分からない。"""
         try:
             await asyncio.wait_for(self._send(alaw), len(alaw) / _RATE + 15.0)
         except (asyncio.TimeoutError, OSError) as e:
@@ -189,13 +212,27 @@ class TapoTalk:
     async def _send(self, alaw: bytes) -> None:
         start = time.monotonic()
         for index in range(0, len(alaw), _CHUNK):
+            if self._drain.done():
+                raise TalkError("カメラが接続を閉じた", partial=self.sent)
+            if self.backlog() > _BACKLOG_SECONDS:
+                raise TalkError("カメラが音声を受け取らなくなった", partial=self.sent)
             chunk = alaw[index:index + _CHUNK].ljust(_CHUNK, _SILENCE)   # 端数は無音で埋める
-            self._write(self._mux.audio(chunk))
+            self._written = self._write(self._mux.audio(chunk))
             await asyncio.wait_for(self._connection.writer.drain(), _DRAIN_TIMEOUT)
             self.sent = True  # 最初の送信が通ってから（バッファに入っただけでは、まだ鳴っていない）
             wait = start + (index // _CHUNK + 1) * _CHUNK / _RATE - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
+
+    async def flush(self, timeout: float = _BACKLOG_SECONDS) -> None:
+        """送った音声を、カメラが最後まで受け取るのを待つ。受け取らなければ TalkError。"""
+        deadline = time.monotonic() + timeout
+        while self.backlog() > 0:
+            if self._drain.done():
+                raise TalkError("カメラが接続を閉じた", partial=self.sent)
+            if time.monotonic() > deadline:
+                raise TalkError("カメラが音声を最後まで受け取らなかった", partial=self.sent)
+            await asyncio.sleep(0.05)
 
     async def close(self) -> None:
         if self._drain:
@@ -211,4 +248,5 @@ async def play_alaw(stream: TapoStream, alaw: bytes) -> None:
     """A-law（8kHz モノラル）の音声を、カメラのスピーカーで鳴らす。"""
     async with TapoTalk(stream) as talk:
         await talk.send(alaw)
+        await talk.flush()
         await asyncio.sleep(0.3)  # 送り終えたあと、スピーカーが鳴り終わるまで

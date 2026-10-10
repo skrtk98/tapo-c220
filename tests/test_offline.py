@@ -1,12 +1,18 @@
 """カメラ無しで確かめられる部分（設定の読み込み、SOAP の組み立てと解析、TS の組み立て、向きの対応）。"""
 
+import asyncio
+import socket
+import sys
+import time
+
 import httpx
 import pytest
 
 from tapo_c220 import Direction, OnvifClient, OnvifError, TapoC220, TapoConfig
 from tapo_c220.onvif import redact
-from tapo_c220.tapo.stream import digest_password
-from tapo_c220.talk import Muxer, _reply_params, crc32_mpeg, header_packets
+from tapo_c220 import talk
+from tapo_c220.tapo.stream import Connection, digest_password
+from tapo_c220.talk import Muxer, TalkError, _reply_params, crc32_mpeg, header_packets, play_alaw
 
 CFG = TapoConfig(host="192.0.2.1", user="user", password="p@ss/word", cloud_password="cloud")
 
@@ -230,3 +236,75 @@ async def test_settings_requests():
     with pytest.raises(ValueError):
         await settings.set_alarm(sound=False, light=False)
     assert DayNight("on") is DayNight.NIGHT and Detection("line_crossing") is Detection.LINE_CROSSING
+
+
+class _FakeStream:
+    """手元の TCP サーバを、認証済みのカメラの 8800 番のふりをさせる。"""
+
+    timeout = 2.0
+
+    def __init__(self, port: int):
+        self.port = port
+
+    async def connect(self) -> Connection:
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        return Connection(reader, writer, "nonce", "password")
+
+
+async def _fake_camera(behave) -> tuple[asyncio.Server, _FakeStream]:
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"}}\r\n")  # 双方向音声の開始の要求
+        writer.write(b'--x\r\nContent-Type: application/json\r\n\r\n{"params":{"error_code":0,"session_id":"7"}}\r\n')
+        await writer.drain()
+        try:
+            await behave(reader, writer)
+        finally:
+            writer.close()
+
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)  # 読まなければすぐ詰まるように、受信の窓を小さくする
+    sock.bind(("127.0.0.1", 0))
+    server = await asyncio.start_server(serve, sock=sock)
+    return server, _FakeStream(sock.getsockname()[1])
+
+
+async def test_talk_notices_camera_that_closes():
+    async def close_soon(reader, writer):
+        await reader.read(1000)
+
+    server, stream = await _fake_camera(close_soon)
+    async with server:
+        with pytest.raises(TalkError, match="閉じた") as error:
+            await play_alaw(stream, b"\xd5" * 8000 * 5)
+        assert error.value.partial
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="届いていない量は Linux でしか調べられない")
+async def test_talk_notices_camera_that_stops_reading(monkeypatch):
+    monkeypatch.setattr(talk, "_BACKLOG_SECONDS", 0.5)
+    stop = asyncio.Event()
+
+    async def never_read(reader, writer):
+        reader._transport.pause_reading()
+        await stop.wait()
+
+    server, stream = await _fake_camera(never_read)
+    async with server:
+        started = time.monotonic()
+        with pytest.raises(TalkError, match="受け取らなくなった"):
+            await play_alaw(stream, b"\xd5" * 8000 * 30)
+        assert time.monotonic() - started < 10  # 送信バッファが埋まるのを待たずに気づく
+        stop.set()
+
+
+async def test_talk_completes_when_camera_reads():
+    got = bytearray()
+
+    async def read_all(reader, writer):
+        while chunk := await reader.read(65536):
+            got.extend(chunk)
+
+    server, stream = await _fake_camera(read_all)
+    async with server:
+        await play_alaw(stream, b"\xd5" * 800)
+    assert got.count(b"audio/mp2t") == 6  # 番組表と、20ms ぶんが5つ

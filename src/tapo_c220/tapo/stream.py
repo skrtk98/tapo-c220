@@ -56,10 +56,12 @@ class Connection:
         self.writer.write(BOUNDARY + b"\r\nContent-Type: application/json\r\nContent-Length: "
                           + str(len(body)).encode() + b"\r\n\r\n" + body + b"\r\n")
 
-    def part(self, content_type: str, body: bytes, headers: str = "") -> None:
-        """メディアの部分を1つ書く。headers は `X-Session-Id: 1\\r\\n` のような追加の見出し。"""
-        self.writer.write(BOUNDARY + f"\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {len(body)}\r\n\r\n"
-                          .encode() + body)
+    def part(self, content_type: str, body: bytes, headers: str = "") -> int:
+        """メディアの部分を1つ書く。headers は `X-Session-Id: 1\\r\\n` のような追加の見出し。書いたバイト数を返す。"""
+        data = (BOUNDARY + f"\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {len(body)}\r\n\r\n".encode()
+                + body)
+        self.writer.write(data)
+        return len(data)
 
     async def close(self) -> None:
         self.writer.close()
