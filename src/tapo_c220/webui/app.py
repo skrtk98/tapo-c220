@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -17,7 +18,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
+from ..api import TapoApiError
 from ..sdcard import SdCard
+from ..settings import DayNight, Detection
 from ..sdplayer import SdPlayer
 from ..webrtc import WebRtcSessions
 
@@ -27,6 +30,7 @@ _MOVE_TIMEOUT = 5.0             # 押しっぱなしの首振りを、止める�
 _RECORD_MAX_SECONDS = 3600.0    # 止め忘れた録音・録画を終える時間
 _SD_EXPORT_MAX_SECONDS = 3600.0  # SD カードから1回に取り出せる長さ（実時間の速さでしか届かない）
 _UPLOAD_MAX = 20 * 1024 * 1024  # スピーカーで鳴らす音声の大きさの上限
+_EVENT_RETRY = 10.0             # 検知イベントの購読に失敗したあと、次に試すまでの時間（秒）
 
 
 class Move(BaseModel):
@@ -64,6 +68,26 @@ class SdExport(BaseModel):
     seconds: float = Field(gt=0, le=_SD_EXPORT_MAX_SECONDS)
 
 
+class Siren(BaseModel):
+    seconds: float = Field(10.0, gt=0, le=60)
+
+
+class Image(BaseModel):
+    brightness: int | None = Field(None, ge=0, le=100)
+    contrast: int | None = Field(None, ge=0, le=100)
+    saturation: int | None = Field(None, ge=0, le=100)
+    sharpness: int | None = Field(None, ge=0, le=100)
+
+
+class DayNightMode(BaseModel):
+    mode: DayNight
+
+
+class DetectionSwitch(BaseModel):
+    kind: Detection
+    enabled: bool
+
+
 class RecordStart(BaseModel):
     kind: str = Field("audio", pattern="^(audio|video)$")
     stream: str = Field(MAIN, pattern="^stream[12]$")
@@ -76,6 +100,8 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     player: dict[str, SdPlayer | None] = {"current": None}  # SD カードの録画の再生（1つだけ）
     playing: set[asyncio.Task] = set()  # スピーカーで鳴らしている（順番待ちを含む）処理
     record_lock = asyncio.Lock()  # 開始と停止を1つずつ行う（同時の開始で ffmpeg を2本起こさない）
+    # 検知イベントの受信。最初に問い合わせが来たときに購読を始め、新しいものから 200 件を覚えておく
+    detected: dict = {"task": None, "seq": 0, "log": deque(maxlen=200), "active": {}, "error": "", "failed": 0.0}
 
     async def stop_player() -> None:
         current, player["current"] = player["current"], None
@@ -88,9 +114,10 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         app.state.webrtc = WebRtcSessions(app.state.camera.cfg)
         app.state.sdcard = SdCard(app.state.camera.cfg)
         yield
-        if export["task"] is not None:
-            export["task"].cancel()
-            await asyncio.gather(export["task"], return_exceptions=True)
+        for task in (export["task"], detected["task"]):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         await stop_player()
         await app.state.webrtc.close()
         if state["recording"] is not None:
@@ -108,6 +135,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     @app.exception_handler(OnvifError)
     @app.exception_handler(MediaError)
     @app.exception_handler(TalkError)
+    @app.exception_handler(TapoApiError)
     async def device_error(request: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=502)
 
@@ -285,9 +313,24 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
 
     # --- スピーカー ---------------------------------------------------------------------------------------------------
 
+    async def speak(sound) -> dict:
+        """スピーカーで鳴らす処理を、止められるようにして待つ。鳴り終わってから応答する。"""
+        task = asyncio.create_task(sound)
+        playing.add(task)
+        try:
+            seconds = await task
+        except asyncio.CancelledError:
+            if not task.cancelled():  # 止められたのは再生ではなく、この要求そのもの（ブラウザが切れた等）
+                task.cancel()
+                raise
+            return {"stopped": True}
+        finally:
+            playing.discard(task)
+        return {"seconds": round(seconds, 2)}
+
     @app.post("/api/speaker/play")
     async def speaker_play(file: UploadFile, gain_db: float = 0.0) -> dict:
-        """音声ファイルを受け取り、カメラのスピーカーで鳴らす。鳴り終わってから応答する。"""
+        """音声ファイルを受け取り、カメラのスピーカーで鳴らす。"""
         if not -30 <= gain_db <= 30:
             raise HTTPException(400, "gain_db は -30〜30")
         data = await file.read(_UPLOAD_MAX + 1)
@@ -296,18 +339,12 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         with tempfile.NamedTemporaryFile(suffix=Path(file.filename or "").suffix[:8]) as tmp:
             tmp.write(data)
             tmp.flush()
-            task = asyncio.create_task(cam().play(tmp.name, audio_filter=f"volume={gain_db:.1f}dB" if gain_db else ""))
-            playing.add(task)
-            try:
-                seconds = await task
-            except asyncio.CancelledError:
-                if not task.cancelled():  # 止められたのは再生ではなく、この要求そのもの（ブラウザが切れた等）
-                    task.cancel()
-                    raise
-                return {"stopped": True}
-            finally:
-                playing.discard(task)
-        return {"seconds": round(seconds, 2)}
+            return await speak(cam().play(tmp.name, audio_filter=f"volume={gain_db:.1f}dB" if gain_db else ""))
+
+    @app.post("/api/speaker/siren")
+    async def speaker_siren(body: Siren) -> dict:
+        """サイレンの音を鳴らす（カメラ内蔵の警報をいますぐ鳴らす API が無いので、スピーカーへ音を送る）。"""
+        return await speak(cam().siren(body.seconds))
 
     @app.post("/api/speaker/stop")
     async def speaker_stop() -> dict:
@@ -315,6 +352,50 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         for task in playing:
             task.cancel()
         return {"stopped": len(playing)}
+
+    # --- 設定と検知 ---------------------------------------------------------------------------------------------------
+
+    @app.get("/api/settings")
+    async def settings() -> dict:
+        s = cam().settings
+        return {"day_night": await s.day_night(), "image": await s.image(), "detections": await s.detections()}
+
+    @app.post("/api/settings/image")
+    async def settings_image(body: Image) -> dict:
+        await cam().settings.set_image(**body.model_dump())
+        return await cam().settings.image()
+
+    @app.post("/api/settings/day-night")
+    async def settings_day_night(body: DayNightMode) -> dict:
+        await cam().settings.set_day_night(body.mode)
+        return {"day_night": await cam().settings.day_night()}
+
+    @app.post("/api/settings/detection")
+    async def settings_detection(body: DetectionSwitch) -> dict:
+        await cam().settings.set_detection(body.kind, body.enabled)
+        return {body.kind.value: (await cam().settings.detection(body.kind))["enabled"]}
+
+    async def listen() -> None:
+        try:
+            async for event in cam().events():
+                detected["seq"] += 1
+                detected["active"][event.kind] = event.active
+                detected["log"].append({"seq": detected["seq"], "kind": event.kind, "active": event.active,
+                                        "time": event.time})
+        except (OnvifError, OSError) as e:
+            detected["error"] = str(e) or type(e).__name__
+            detected["failed"] = time.monotonic()
+        finally:
+            detected["task"] = None
+
+    @app.get("/api/events")
+    async def events(after: int = 0) -> dict:
+        """検知イベントのうち、番号が after より後のもの。購読は、最初にここが呼ばれたときに始める。"""
+        if detected["task"] is None and time.monotonic() - detected["failed"] > _EVENT_RETRY:
+            detected["error"] = ""
+            detected["task"] = asyncio.create_task(listen())
+        return {"events": [e for e in detected["log"] if e["seq"] > after], "seq": detected["seq"],
+                "active": detected["active"], "listening": detected["task"] is not None, "error": detected["error"]}
 
     # --- 首振り -------------------------------------------------------------------------------------------------------
 

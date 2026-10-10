@@ -55,8 +55,11 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | `tapo_c220.media` | RTSP の受信と変換（ffmpeg）。静止画、ライブ配信、録音・録画 |
 | `tapo_c220.webrtc` | ライブ映像と音声を WebRTC でブラウザへ送る（aiortc） |
 | `tapo_c220.talk` | Tapo 独自の双方向音声（スピーカー） |
-| `tapo_c220.sdcard` | microSD の録画の一覧（pytapo）と取り出し。`[sdcard]` の追加の依存が要る |
+| `tapo_c220.sdcard` | microSD の録画の一覧（pytapo）と取り出し。`[tapo]` の追加の依存が要る |
 | `tapo_c220.sdplayer` | microSD の録画を、指定した時刻から WebRTC で流し続ける |
+| `tapo_c220.api` | Tapo 独自の API（443 番）への窓口（pytapo を別スレッドで呼ぶ） |
+| `tapo_c220.settings` | カメラの設定の読み書き（`CameraSettings`）。`[tapo]` の追加の依存が要る |
+| `tapo_c220.events` | 検知のイベントを ONVIF で受け取る |
 | `tapo_c220.webui` | FastAPI の WebUI（`TapoC220` を HTTP から呼ぶだけ） |
 
 ## 調査結果
@@ -71,6 +74,9 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | 首振り（上下左右） | ONVIF PTZ（2020 番） | できる（絶対・相対・連続・停止・プリセット） |
 | スピーカーからの再生 | **RTSP/ONVIF では不可**。Tapo 独自の双方向音声（8800 番） | できる（非公式のプロトコル） |
 | microSD の録画の一覧と取り出し | **RTSP/ONVIF では不可**。Tapo 独自の API（443 番）と再生（8800 番） | できる（非公式。等速でしか届かない） |
+| 設定の読み書き（画質、昼夜、検知、音量など） | Tapo 独自の API（443 番） | できる（非公式） |
+| 検知イベントの受信 | ONVIF のイベント（カメラからこちらへ通知させる） | できる（PullPoint は不可） |
+| 警報をいますぐ鳴らす | Tapo 独自の API | **API が見つからない**。スピーカーへサイレンの音を送って代える |
 
 開いているポートは 443・554・2020・8800。
 
@@ -159,6 +165,59 @@ async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を
 映像の H.264 は変換せず送り、音声は µ-law 16kHz が WebRTC の標準の形ではないので、PCM に戻して Opus にする。
 いま流している位置（録画の時刻）は、TS の PTS の進みから求める（`position`）。
 
+### 設定（Tapo 独自の API）
+
+`tapo_c220.settings.CameraSettings`（`cam.settings` でも取れる）。認証は Tapo アカウントのパスワード（ユーザは admin）。
+
+```python
+s = cam.settings
+await s.set_day_night("auto")                 # auto / on（夜・赤外線）/ off（昼・カラー）
+await s.set_image(brightness=55)              # 明るさ・コントラスト・彩度・シャープネス（0〜100）
+await s.set_detection("person", True)         # motion / person / pet / vehicle / baby_cry / bark / meow / glass_break / tamper / line_crossing
+await s.set_alarm(enabled=True, sound=False)  # 検知したときの警報（音・光・音量）
+await s.set_privacy(True)                     # プライバシーモード
+```
+
+| 分類 | 読む | 書く |
+| --- | --- | --- |
+| 本体 | `info` `time` `privacy` `led` `scheduled_reboot` `firmware` `notifications` | `set_privacy` `set_led` `set_scheduled_reboot` `set_notifications` `reboot` |
+| 画質 | `day_night` `image` `flip` `lens_correction` `light_frequency` `osd` `video` `video_capability` | `set_day_night` `set_image` `set_flip` `set_lens_correction` `set_light_frequency` `set_osd` |
+| 音声 | `audio` | `set_speaker_volume` `set_microphone` |
+| 検知・警報 | `detection` `detections` `alarm` | `set_detection` `set_alarm` |
+| 首振り | `auto_track` | `set_auto_track` `cruise` `calibrate` |
+| 録画 | `recording` | `set_recording` `set_loop_recording` |
+
+- 書き込みは、実機で値を変えて読み直し、元に戻して確かめた（LED、通知、昼夜、画質の4項目、歪みの補正、電源周波数、OSD の曜日、
+  スピーカーとマイクの音量、マイクのミュート、検知の10種類、自動追尾、上書き録画、警報の音・光・音量、プライバシーモード）。
+  `set_recording`・`set_flip`・`set_scheduled_reboot` は、今と同じ値を書いて拒まれないことだけ確かめた。
+  `reboot`・`cruise`・`calibrate` は呼んでいない。映像の符号化（解像度・ビットレート）は読むだけ。
+- 警報の設定は、pytapo の `setAlarm` の書き方（`method: set`）が拒まれる。`setAlertConfig` で書く。
+- 警報をいますぐ鳴らす API は見つからない。pytapo の `startManualAlarm`（`manual_msg_alarm`）、新しいファームウェア向けと
+  される `manual_alarm`、`setSirenStatus` は、どれも「そのメソッドは無い」（-40210）。代わりに `cam.siren(秒)` が、
+  サイレンの音を作ってスピーカーの経路（8800 番）で鳴らす。音の大きさはスピーカーの音量で決まる。カメラの光は点かない。
+- ファームウェアの自動更新の設定の書き込みは、認証のエラー（-40209）で拒まれる。包んでいない。
+- SD カードの初期化とファームウェアの更新の開始は、取り返しがつかないので包んでいない。
+- この機種に無いもの：バッテリー、白色ライト、PIR、チャイム、荷物の検知。
+
+### 検知イベント（ONVIF）
+
+```python
+await cam.settings.set_detection("person", True)   # オンにした検知だけ届く
+async for event in cam.events():                    # やめるまで続く。Event(kind, active, time, topic)
+    print(event.kind, "検知" if event.active else "収まった")
+```
+
+- PullPoint（CreatePullPointSubscription → PullMessages）は使えない。購読は作れるが、PullMessages を送るとカメラが何も返さずに切る。
+- WS-BaseNotification の Subscribe で、こちらが開けた HTTP の口の URL を渡すと、カメラがそこへ Notify を POST してくる。
+  `events()` は LAN 側のアドレスの空いたポートで待ち受け、カメラの IP アドレス以外からの接続は受けない。
+  カメラからこちらへ着信できること（ファイアウォール）が要る。
+- 届くのは動体（Motion）・人物（People）・いたずら（Tamper）・ライン横断（LineCross）・TPSmartEvent。
+  検知している間は真を約1秒ごとに送り、収まると偽を1回送る。`events()` は変わり目だけを返す。
+- 通知に付いている時刻（UtcTime）は当てにならない（人物の検知で、最初の時刻のまま変わらなかった）。届いた時刻を使っている。
+- 実機で届いたのを確かめたのは動体と人物。いたずら・ライン横断・TPSmartEvent は起こせていない。
+  首振りの直後の動体は、届くときと届かないときがあった。
+- 過去の検知は `SdCard.detections(start, end)`（カメラが SD カードに記録した検知の一覧）でも読める。
+
 ## WebUI
 
 - ライブ映像：既定は WebRTC（640×360 / 2560×1440、音あり）。カメラの H.264 と G.711 A-law は WebRTC の標準のコーデックなので、
@@ -175,4 +234,7 @@ async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を
   再生している位置から長さ（最長1時間）を指定して MP4 に保存もできる（`sd-日付-時刻.mp4` として録音・録画の一覧に並ぶ）。
   カメラの再生は1本ずつなので、再生と保存は同時にできない。
 - スピーカー：音声ファイルを送る、またはブラウザのマイクで録って送る（リアルタイムの通話ではない）。長さの上限は無く
-  （ファイルは 20MB まで）、途中で止められる。
+  （ファイルは 20MB まで）、途中で止められる。サイレン（5〜60 秒）も同じ経路で鳴らす。
+- 検知イベント：動体・人物・いたずら・ライン横断の検知をオン・オフし、届いたイベント（検知した・収まった）を新しい順に並べる。
+  サーバが購読し（最初にページを開いたとき）、ブラウザは2秒ごとに問い合わせる。
+- 画質・昼夜：昼夜の切り替え（自動・昼・夜）と、明るさ・コントラスト・彩度・シャープネス。動かすとすぐカメラに書く。

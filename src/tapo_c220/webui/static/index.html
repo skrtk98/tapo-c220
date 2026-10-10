@@ -146,7 +146,22 @@
         <button id="mic">🎙 マイクで話す</button>
         <button id="speaker-stop" disabled>■ 止める</button>
       </div>
-      <p class="mono" style="margin:10px 0 0">Tapo 独自の双方向音声（8800 番）。鳴り終わるか止めるまで、次は送れない。</p>
+      <div class="row"><button id="siren">🚨 サイレンを鳴らす</button><select id="siren-seconds" aria-label="サイレンの長さ"><option value="5">5 秒</option><option value="10" selected>10 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></div>
+      <p class="mono" style="margin:10px 0 0">Tapo 独自の双方向音声（8800 番）。鳴り終わるか止めるまで、次は送れない。サイレンも同じ経路で音を送る。</p>
+    </section>
+    <section>
+      <h2>検知イベント（ONVIF）</h2>
+      <div class="row" id="detections"></div>
+      <div class="row mono" id="event-status">読み込み中…</div>
+      <ul id="events"></ul>
+    </section>
+    <section>
+      <h2>画質・昼夜</h2>
+      <div class="row">
+        <label for="day-night">昼夜</label>
+        <select id="day-night"><option value="auto">自動</option><option value="off">昼（カラー）</option><option value="on">夜（赤外線）</option></select>
+      </div>
+      <div id="image"></div>
     </section>
   </aside>
 </main>
@@ -504,6 +519,15 @@ async function sendAudio(blob, name) {
   } finally { $("play").disabled = $("mic").disabled = false; $("speaker-stop").disabled = true; }
 }
 $("speaker-stop").addEventListener("click", run(() => api("/api/speaker/stop", { method: "POST" })));
+$("siren").addEventListener("click", run(async () => {
+  $("play").disabled = $("mic").disabled = $("siren").disabled = true;
+  $("speaker-stop").disabled = false;
+  say("サイレンを鳴らしている…");
+  try {
+    const result = await api("/api/speaker/siren", { json: { seconds: Number($("siren-seconds").value) } });
+    say(result.stopped ? "サイレンを止めた" : `サイレンを ${result.seconds} 秒鳴らした`);
+  } finally { $("play").disabled = $("mic").disabled = $("siren").disabled = false; $("speaker-stop").disabled = true; }
+}));
 $("play").addEventListener("click", run(async () => {
   const file = $("file").files[0];
   if (!file) return say("音声ファイルを選ぶこと", true);
@@ -529,6 +553,58 @@ $("mic").addEventListener("click", run(async () => {
   say("録音中。話し終えたらもう一度押す");
 }));
 
+// --- 設定と検知イベント ---
+const KINDS = { motion: "動体", person: "人物", tamper: "いたずら", line_crossing: "ライン横断", smart: "スマート検知" };
+const IMAGE = { brightness: "明るさ", contrast: "コントラスト", saturation: "彩度", sharpness: "シャープネス" };
+async function loadSettings() {
+  const settings = await api("/api/settings");
+  $("day-night").value = settings.day_night;
+  $("image").replaceChildren(...Object.entries(IMAGE).map(([name, label]) => {
+    const row = Object.assign(document.createElement("div"), { className: "row" });
+    const slider = Object.assign(document.createElement("input"), { type: "range", min: 0, max: 100, step: 1, value: settings.image[name], id: `image-${name}` });
+    const value = Object.assign(document.createElement("span"), { className: "mono", textContent: settings.image[name] });
+    slider.addEventListener("input", () => { value.textContent = slider.value; });
+    slider.addEventListener("change", run(async () => {  // つまみを離したときに送る
+      const image = await api("/api/settings/image", { json: { [name]: Number(slider.value) } });
+      slider.value = value.textContent = image[name];
+    }));
+    row.append(Object.assign(document.createElement("label"), { htmlFor: slider.id, textContent: label, style: "width:6.5em" }), slider, value);
+    return row;
+  }));
+  $("detections").replaceChildren(...["motion", "person", "tamper", "line_crossing"].map((kind) => {
+    const label = document.createElement("label");
+    const box = Object.assign(document.createElement("input"), { type: "checkbox", checked: settings.detections[kind] });
+    box.addEventListener("change", run(async () => {
+      box.disabled = true;
+      try { box.checked = (await api("/api/settings/detection", { json: { kind, enabled: box.checked } }))[kind]; }
+      catch (e) { box.checked = !box.checked; throw e; }
+      finally { box.disabled = false; }
+    }));
+    label.append(box, ` ${KINDS[kind]}`);
+    return label;
+  }));
+}
+$("day-night").addEventListener("change", run(async () => {
+  $("day-night").value = (await api("/api/settings/day-night", { json: { mode: $("day-night").value } })).day_night;
+}));
+let eventSeq = 0;
+async function pollEvents() {
+  try {
+    const result = await api(`/api/events?after=${eventSeq}`);
+    if (result.seq < eventSeq) { eventSeq = 0; $("events").replaceChildren(); }  // サーバが起動し直した
+    for (const event of result.events) {
+      eventSeq = event.seq;
+      const item = Object.assign(document.createElement("li"), { textContent: `${new Date(event.time * 1000).toLocaleTimeString()} ${KINDS[event.kind] || event.kind} ${event.active ? "を検知" : "が収まった"}` });
+      if (event.active) item.style.color = "var(--danger)";
+      $("events").prepend(item);
+    }
+    while ($("events").children.length > 30) $("events").lastChild.remove();
+    const now = Object.entries(result.active).filter(([, on]) => on).map(([kind]) => KINDS[kind] || kind);
+    $("event-status").textContent = result.error ? `受け取れない：${result.error}` : now.length ? `検知中：${now.join("・")}` : "待ち受け中（オンにした検知だけ届く）";
+  } catch (e) { $("event-status").textContent = `受け取れない：${e.message}`; }
+  setTimeout(pollEvents, 2000);
+}
+
 // --- 起動 ---
 run(async () => {
   const info = await api("/api/info");
@@ -536,8 +612,9 @@ run(async () => {
   showPosition(info.position);
   if (!info.speaker) { $("play").disabled = $("mic").disabled = true; say("TAPO_CLOUD_PASSWORD が無いので、スピーカーは使えない"); }
   await Promise.all([loadPresets(), showRecording(), loadRecordings()]);
-  if (info.speaker) await Promise.all([loadSd(), showSdExport()]);
-  else $("sd-status").textContent = "TAPO_CLOUD_PASSWORD が無いので使えない";
+  pollEvents();
+  if (info.speaker) await Promise.all([loadSd(), showSdExport(), loadSettings()]);
+  else { $("sd-status").textContent = "TAPO_CLOUD_PASSWORD が無いので使えない"; $("siren").disabled = true; }
 })();
 showLive();
 </script>
