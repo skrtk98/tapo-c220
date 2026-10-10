@@ -121,11 +121,11 @@ class OnvifClient:
                 f'<Nonce EncodingType="{_BASE64}">{base64.b64encode(nonce).decode()}</Nonce>'
                 f'<Created xmlns="{_WSU}">{created}</Created></UsernameToken></Security></s:Header>')
 
-    async def _post(self, body: str, *, auth: bool) -> ET.Element:
+    async def _post(self, body: str, *, auth: bool, url: str | None = None) -> ET.Element:
         envelope = (f'<?xml version="1.0" encoding="UTF-8"?><s:Envelope {_XMLNS}>'
                     f'{self._security() if auth else ""}<s:Body>{body}</s:Body></s:Envelope>')
         try:
-            response = await self._http.post(self.url, content=envelope.encode(),
+            response = await self._http.post(url or self.url, content=envelope.encode(),
                                              headers={"Content-Type": "application/soap+xml; charset=utf-8"})
         except httpx.HTTPError as e:
             raise OnvifError(f"カメラの ONVIF に届かない（{type(e).__name__}）") from None
@@ -144,11 +144,12 @@ class OnvifClient:
             raise OnvifError("ONVIF の応答に中身が無い")
         return payload[0]
 
-    async def call(self, body: str) -> ET.Element:
-        """認証つきで要求を1つ送り、応答の Body の中身を返す。body は `<tds:GetDeviceInformation/>` のような要素。"""
+    async def call(self, body: str, *, url: str | None = None) -> ET.Element:
+        """認証つきで要求を1つ送り、応答の Body の中身を返す。body は `<tds:GetDeviceInformation/>` のような要素。
+        url は、イベントの購読のように、カメラが別の宛先を指定してきたときに使う。"""
         if self._clock_offset is None:
             await self._sync_clock()
-        return await self._post(body, auth=True)
+        return await self._post(body, auth=True, url=url)
 
     async def _sync_clock(self) -> None:
         """カメラの時計とのずれを測る。PasswordDigest の Created が大きくずれると認証に失敗するため。"""

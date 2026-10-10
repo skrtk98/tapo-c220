@@ -178,3 +178,54 @@ def test_sdplayer_audio_frames():
     frames = [player.audio.queue.get_nowait() for _ in range(2)]
     assert [(f.samples, f.sample_rate, f.pts) for f in frames] == [(320, 16000, 0), (320, 16000, 320)]
     assert player.audio.queue.empty() and player.position == 1000.0
+
+
+def test_event_notification():
+    """カメラが送ってくる Notify から、検知の種類と、始まり・終わりを読む。"""
+    import xml.etree.ElementTree as ET
+
+    from tapo_c220.events import parse_messages
+
+    def message(topic: str, name: str, value: str) -> str:
+        return (f'<wsnt:NotificationMessage><wsnt:Topic>tns1:{topic}</wsnt:Topic><wsnt:Message>'
+                f'<tt:Message PropertyOperation="Changed" UtcTime="2026-10-10T04:13:10Z"><tt:Source>'
+                f'<tt:SimpleItem Value="true" Name="Rule"/></tt:Source><tt:Data><tt:SimpleItem Value="{value}" Name="{name}"/>'
+                f'</tt:Data></tt:Message></wsnt:Message></wsnt:NotificationMessage>')
+
+    root = ET.fromstring(
+        '<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" '
+        'xmlns:tt="http://www.onvif.org/ver10/schema"><e:Body><wsnt:Notify>'
+        + message("RuleEngine/PeopleDetector/People", "IsPeople", "false")
+        + message("RuleEngine/CellMotionDetector/Motion", "IsMotion", "true")
+        + message("VideoSource/MotionAlarm", "State", "true") + '</wsnt:Notify></e:Body></e:Envelope>')
+    assert [(e.kind, e.active) for e in parse_messages(root)] == [("person", False), ("motion", True), ("motion", True)]
+
+
+async def test_settings_requests():
+    """設定の書き込みは、与えた項目だけを、カメラの API の名前に直して送る。"""
+    from tapo_c220.settings import CameraSettings, DayNight, Detection
+
+    sent = []
+
+    class Api:
+        async def execute(self, method, params):
+            sent.append((method, params))
+            return {"msg_alarm": {"chn1_msg_alarm_info": {"enabled": "off", "alarm_mode": ["light", "sound"],
+                                                         "alarm_volume": "high", "alarm_duration": "0"}}}
+
+    settings = CameraSettings(api=Api())
+    await settings.set_image(brightness=60, sharpness=40)
+    await settings.set_image()   # 何も与えなければ送らない
+    await settings.set_alarm(sound=False, volume="low")
+    await settings.set_osd(week=True)
+    assert sent == [
+        ("setDayNightModeConfig", {"image": {"common": {"luma": "60", "sharpness": "40"}}}),
+        ("getAlertConfig", {"msg_alarm": {"name": ["chn1_msg_alarm_info"]}}),
+        ("setAlertConfig", {"msg_alarm": {"chn1_msg_alarm_info": {"alarm_mode": ["light"], "alarm_volume": "low"}}}),
+        ("setOsd", {"method": "set", "OSD": {"week": {"enabled": "on"}}}),
+    ]
+    with pytest.raises(ValueError):
+        await settings.set_image(contrast=101)
+    with pytest.raises(ValueError):
+        await settings.set_alarm(sound=False, light=False)
+    assert DayNight("on") is DayNight.NIGHT and Detection("line_crossing") is Detection.LINE_CROSSING

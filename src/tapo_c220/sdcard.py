@@ -1,4 +1,4 @@
-"""カメラ本体の microSD カードの録画（pytapo と cryptography が要る。`tapo-c220-survey[sdcard]`）。
+"""カメラ本体の microSD カードの録画（pytapo と cryptography が要る。`tapo-c220-survey[tapo]`）。
 
 ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP でも再生できない。どちらも Tapo 独自の経路を使う。
 認証はどちらも Tapo アカウント（クラウド）のパスワード。
@@ -25,8 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from pytapo import Tapo
-
+from .api import TapoApi, TapoApiError
 from .config import TapoConfig
 from .media import MediaError
 from .talk import TalkError, authenticate, crc32_mpeg
@@ -195,31 +194,18 @@ async def _read_parts(reader: asyncio.StreamReader, timeout: Callable[[], float]
 
 
 class SdCard:
-    def __init__(self, cfg: TapoConfig, *, timeout: float = 10.0):
+    def __init__(self, cfg: TapoConfig, *, api: TapoApi | None = None, timeout: float = 10.0):
         self.cfg, self.timeout = cfg, timeout
-        self._api: Tapo | None = None
-        self._api_lock = asyncio.Lock()   # pytapo は同期の HTTP。1つずつ、別スレッドで呼ぶ
+        self.api = api or TapoApi(cfg)
         self._playback_lock = asyncio.Lock()  # 再生は1本ずつ
 
     # --- 一覧（443 番、pytapo） ---------------------------------------------------------------------------------------
 
-    def _connect(self) -> Tapo:
-        if not self.cfg.cloud_password:
-            raise SdCardError("TAPO_CLOUD_PASSWORD（Tapo アカウントのパスワード）が設定されていない")
-        if self._api is None:
-            self._api = Tapo(self.cfg.host, "admin", self.cfg.cloud_password, self.cfg.cloud_password,
-                             printWarnInformation=False)
-        return self._api
-
-    async def _call(self, work: Callable[[Tapo], object]):
-        async with self._api_lock:
-            try:
-                return await asyncio.to_thread(lambda: work(self._connect()))
-            except SdCardError:
-                raise
-            except Exception as e:  # pytapo は素の Exception を投げる
-                self._api = None    # 次はログインからやり直す
-                raise SdCardError(f"カメラの API を呼べなかった（{str(e)[:200] or type(e).__name__}）") from None
+    async def _call(self, work: Callable[[object], object]):
+        try:
+            return await self.api.call(work)
+        except TapoApiError as e:
+            raise SdCardError(str(e)) from None
 
     async def status(self) -> dict[str, str]:
         """カードの状態（status、total_space、free_space など。カードが無ければ空）。"""
@@ -244,6 +230,18 @@ class SdCard:
             kind = value.get("vedio_type")
             result.append(Segment(float(value["startTime"]), float(value["endTime"]), _KINDS.get(kind, str(kind))))
         return sorted(result, key=lambda s: s.start)
+
+    async def detections(self, start: float, end: float) -> list[dict]:
+        """その間（UNIX 時刻）にカメラが検知して記録した出来事。start と end（UNIX 時刻）と、機種が返す種類の番号（alarm_type）。
+        1件も無いときは、カメラが検索の失敗（-71105）を返すので、空として扱う。"""
+        try:
+            found = await self.api.call(lambda api: api.getEvents(int(start), int(end)))
+        except TapoApiError as e:
+            if "-71105" in str(e):
+                return []
+            raise SdCardError(str(e)) from None
+        return [{"start": float(e["start_time"]), "end": float(e["end_time"]), "alarm_type": e.get("alarm_type")}
+                for e in found]
 
     # --- 取り出し（8800 番） -------------------------------------------------------------------------------------------
 
@@ -356,4 +354,4 @@ class SdCard:
         return got
 
     def close(self) -> None:
-        self._api = None
+        self.api.close()

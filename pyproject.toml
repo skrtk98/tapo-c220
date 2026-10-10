@@ -13,10 +13,10 @@ webui = [
     "aiortc>=1.9",
     "fastapi>=0.115",
     "python-multipart>=0.0.20",
-    "tapo-c220-survey[sdcard]",
+    "tapo-c220-survey[tapo]",
     "uvicorn>=0.34",
 ]
-sdcard = [
+tapo = [  # Tapo 独自の API と録画（設定の読み書き、microSD の録画）
     "cryptography>=50.0.2",
     "pytapo>=3.4.26",
 ]

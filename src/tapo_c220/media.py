@@ -171,6 +171,19 @@ async def record(cfg: TapoConfig, path: str | Path, *, kind: str = "audio", stre
     return Recording(await _Process.start(cfg, argv + ["-y", str(path)], stdin=True), path, kind)
 
 
+async def siren_alaw(seconds: float) -> bytes:
+    """サイレンの音（高低2つの音を交互に）を、カメラのスピーカーへ送る形式で作る。"""
+    tone = "0.9*sin(2*PI*t*if(lt(mod(t\\,0.7)\\,0.35)\\,960\\,770))"
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+        f"aevalsrc={tone}:s=8000:d={seconds:.3f}", "-f", "alaw", "pipe:1",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    if proc.returncode != 0 or not out:
+        raise MediaError(f"サイレンの音を作れない（{err.decode(errors='replace').strip()[-300:] or proc.returncode}）")
+    return out
+
+
 async def to_alaw(source: str | Path, *, max_seconds: float | None = None, audio_filter: str = "") -> bytes:
     """音声ファイルを、カメラのスピーカーへ送る形式（8kHz モノラルの G.711 A-law、見出し無し）にする。"""
     argv = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(source), "-vn", "-ac", "1",

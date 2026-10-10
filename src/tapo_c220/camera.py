@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import media
 from .config import TapoConfig
+from .events import Event, events
 from .media import Recording
 from .onvif import OnvifClient, Preset, PtzPosition
 from .talk import TalkError, play_alaw
@@ -41,6 +42,7 @@ class TapoC220:
         self.cfg = cfg or TapoConfig.load()
         self.onvif = OnvifClient(self.cfg.host, self.cfg.user, self.cfg.password, port=self.cfg.onvif_port)
         self._speaker = asyncio.Lock()
+        self._settings = None
 
     async def aclose(self) -> None:
         await self.onvif.aclose()
@@ -84,6 +86,28 @@ class TapoC220:
         async with self._speaker:
             await play_alaw(self.cfg.host, self.cfg.cloud_password, alaw, port=self.cfg.talk_port)
         return len(alaw) / 8000
+
+    async def siren(self, seconds: float = 10.0) -> float:
+        """サイレンの音をスピーカーで鳴らす（カメラ内蔵の警報をいますぐ鳴らす API が、このファームウェアに無いため）。
+        音の大きさは、カメラのスピーカーの音量（settings.set_speaker_volume）で決まる。途中でやめるにはキャンセルする。"""
+        alaw = await media.siren_alaw(seconds)
+        async with self._speaker:
+            await play_alaw(self.cfg.host, self.cfg.cloud_password, alaw, port=self.cfg.talk_port)
+        return len(alaw) / 8000
+
+    # --- 設定と検知（Tapo 独自の API、ONVIF のイベント） ------------------------------------------------------------------
+
+    @property
+    def settings(self):
+        """カメラの設定（settings.CameraSettings）。pytapo が要る（`tapo-c220-survey[tapo]`）。"""
+        if self._settings is None:
+            from .settings import CameraSettings
+            self._settings = CameraSettings(self.cfg)
+        return self._settings
+
+    def events(self, *, changes_only: bool = True) -> AsyncIterator[Event]:
+        """検知のイベントを、やめるまで受け取り続ける（events.events）。その検知をオンにしておくこと（settings.set_detection）。"""
+        return events(self.onvif, changes_only=changes_only)
 
     # --- 首振り（ONVIF PTZ） ------------------------------------------------------------------------------------------
 

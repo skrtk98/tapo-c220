@@ -1,4 +1,4 @@
-"""microSD の録画を、指定した時刻から WebRTC で流し続ける（aiortc と `[sdcard]` の依存が要る）。
+"""microSD の録画を、指定した時刻から WebRTC で流し続ける（aiortc と `[tapo]` の依存が要る）。
 
 カメラからは実時間の速さで MPEG-TS が届く。映像（H.264）は変換せずそのまま送る。音声（G.711 µ-law 16kHz など）は
 WebRTC の標準の形（8kHz）ではないので、PCM に戻して渡し、aiortc に Opus へ変換させる。
