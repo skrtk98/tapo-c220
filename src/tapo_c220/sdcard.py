@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from .media import MediaError
+from .media import MediaError, spawn
 from .talk import crc32_mpeg
 from .tapo import TapoSession
 from .tapo.api import TapoApiError
@@ -325,8 +325,7 @@ class SdCard:
                 else:
                     argv += ["-map", "0:v:0"]
                 argv += ["-c:v", "copy", "-t", f"{seconds:.3f}", "-movflags", "+faststart", "-f", "mp4", "-y", str(path)]
-                proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.DEVNULL,
-                                                            stderr=asyncio.subprocess.PIPE)
+                proc = await spawn(*argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
                 try:
                     _, err = await proc.communicate()
                 except BaseException:

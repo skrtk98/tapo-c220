@@ -15,6 +15,10 @@ C220 で実測したこと（ファームウェア 1.3.1）：
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import os
+import signal
+import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -31,6 +35,26 @@ _STOP_TIMEOUT = 10.0  # 録音・録画を止めるとき、ffmpeg がファイ�
 
 class MediaError(RuntimeError):
     pass
+
+
+_PR_SET_PDEATHSIG = 1
+_libc = ctypes.CDLL(None, use_errno=True) if sys.platform == "linux" else None  # fork の後では読み込まない
+
+
+async def spawn(*argv: str, **options) -> asyncio.subprocess.Process:
+    """ffmpeg を起こす。Linux では、このプロセスが死んだら（強制終了でも）ffmpeg も止まるようにしておく。
+    そうしないと、ファイルへ書いている ffmpeg が残り、カメラの RTSP の同時接続（3本）を埋めたままになる。
+    止まるのは「起こしたスレッド」が終わったとき。イベントループを動かしているスレッドから呼ぶこと。"""
+    if _libc is None:
+        return await asyncio.create_subprocess_exec(*argv, **options)
+    parent = os.getpid()
+
+    def die_with_parent() -> None:
+        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+        if os.getppid() != parent:  # 設定する前に親が死んでいた
+            os._exit(1)
+
+    return await asyncio.create_subprocess_exec(*argv, preexec_fn=die_with_parent, **options)
 
 
 def rtsp_url(cfg: TapoConfig, stream: str = MAIN) -> str:
@@ -62,8 +86,7 @@ class _Process:
         pipe, null = asyncio.subprocess.PIPE, asyncio.subprocess.DEVNULL
         if stdin:
             argv = [a for a in argv if a != "-nostdin"]
-        proc = await asyncio.create_subprocess_exec(*argv, stdin=pipe if stdin else null,
-                                                    stdout=pipe if stdout else null, stderr=pipe)
+        proc = await spawn(*argv, stdin=pipe if stdin else null, stdout=pipe if stdout else null, stderr=pipe)
         return cls(cfg, proc)
 
     async def _read_errors(self) -> None:
@@ -174,7 +197,7 @@ async def record(cfg: TapoConfig, path: str | Path, *, kind: str = "audio", stre
 async def siren_alaw(seconds: float) -> bytes:
     """サイレンの音（高低2つの音を交互に）を、カメラのスピーカーへ送る形式で作る。"""
     tone = "0.9*sin(2*PI*t*if(lt(mod(t\\,0.7)\\,0.35)\\,960\\,770))"
-    proc = await asyncio.create_subprocess_exec(
+    proc = await spawn(
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
         f"aevalsrc={tone}:s=8000:d={seconds:.3f}", "-f", "alaw", "pipe:1",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -192,8 +215,7 @@ async def to_alaw(source: str | Path, *, max_seconds: float | None = None, audio
         argv += ["-t", f"{max_seconds:.3f}"]
     if audio_filter:
         argv += ["-af", audio_filter]
-    proc = await asyncio.create_subprocess_exec(*argv, "-f", "alaw", "pipe:1", stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE)
+    proc = await spawn(*argv, "-f", "alaw", "pipe:1", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     out, err = await proc.communicate()
     if proc.returncode != 0 or not out:
         raise MediaError(f"音声を変換できない（{err.decode(errors='replace').strip()[-300:] or proc.returncode}）")
