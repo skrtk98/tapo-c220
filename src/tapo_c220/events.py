@@ -136,6 +136,10 @@ async def events(onvif: OnvifClient, *, changes_only: bool = True, port: int = 0
                     await asyncio.shield(onvif.call(f'<wsnt:Unsubscribe xmlns:wsnt="{_WSN}"/>', url=address))
                 except (OnvifError, asyncio.CancelledError):
                     pass
+            # 購読が消えていた間に収まった知らせは届かない。検知中だったものは、収まったことにして知らせる
+            for kind in [kind for kind, active in states.items() if active]:
+                yield Event(kind, False, time.time(), "")
+            states.clear()
     finally:
         server.close()
 

@@ -16,6 +16,7 @@ webui = [
     "tapo-c220-survey[tapo]",
     "uvicorn>=0.34",
 ]
+sdcard = ["tapo-c220-survey[tapo]"]  # 以前の名前（互換のために残す）
 tapo = [  # Tapo 独自の API と録画（設定の読み書き、microSD の録画）
     "cryptography>=50.0.2",
     "pytapo>=3.4.26",

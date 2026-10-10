@@ -1130,6 +1130,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+sdcard = [
+    { name = "cryptography" },
+    { name = "pytapo" },
+]
 tapo = [
     { name = "cryptography" },
     { name = "pytapo" },
@@ -1158,10 +1162,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pytapo", marker = "extra == 'tapo'", specifier = ">=3.4.26" },
     { name = "python-multipart", marker = "extra == 'webui'", specifier = ">=0.0.20" },
+    { name = "tapo-c220-survey", extras = ["tapo"], marker = "extra == 'sdcard'" },
     { name = "tapo-c220-survey", extras = ["tapo"], marker = "extra == 'webui'" },
     { name = "uvicorn", marker = "extra == 'webui'", specifier = ">=0.34" },
 ]
-provides-extras = ["webui", "tapo"]
+provides-extras = ["webui", "sdcard", "tapo"]
 
 [package.metadata.requires-dev]
 dev = [

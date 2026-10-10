@@ -384,6 +384,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
                                         "time": event.time})
         except (OnvifError, OSError) as e:
             detected["error"] = str(e) or type(e).__name__
+            detected["active"].clear()  # 収まった知らせを受け取れないので、検知中のままにしない
             detected["failed"] = time.monotonic()
         finally:
             detected["task"] = None
