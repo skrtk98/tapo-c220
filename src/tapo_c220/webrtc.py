@@ -9,10 +9,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 
+import av
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
-from aiortc.contrib.media import MediaPlayer
+from aiortc.mediastreams import MediaStreamError
 
 from . import media
 from .config import TapoConfig
@@ -22,9 +24,76 @@ _CODECS = {"video": "video/H264", "audio": "audio/PCMA"}
 _OPEN_TIMEOUT = 10  # RTSP の接続と読み取りを諦めるまでの秒数
 
 
-def _open(cfg: TapoConfig, stream: str) -> MediaPlayer:
-    return MediaPlayer(media.rtsp_url(cfg, stream), format="rtsp", decode=False, timeout=_OPEN_TIMEOUT,
-                       options={"rtsp_transport": "tcp", "fflags": "nobuffer"})
+class QueueTrack(MediaStreamTrack):
+    """キューに入れられたもの（変換しないパケットか、フレーム）を順に渡す。None が来たら終わり。"""
+
+    def __init__(self, kind: str, on_stop: Callable[[], None] | None = None):
+        super().__init__()
+        self.kind = kind
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self._on_stop = on_stop
+
+    async def recv(self):
+        if self.readyState != "live":
+            raise MediaStreamError
+        item = await self.queue.get()
+        if item is None:
+            self.stop()
+            raise MediaStreamError
+        return item
+
+    def stop(self) -> None:
+        super().stop()
+        if self._on_stop is not None:
+            self._on_stop()
+
+
+class _Reader:
+    """カメラの RTSP を別スレッドで読み、映像と音声のパケットを変換せずにトラックへ配る。どちらかのトラックを止めると読むのもやめる。
+
+    aiortc の MediaPlayer（decode=False）は使わない。同じことをさせると、メモリが毎分約 0.7MB ずつ増え続けた
+    （40 分の連続視聴で 27MB。自前で読むと増えない）。
+    """
+
+    def __init__(self, cfg: TapoConfig, stream: str):
+        """RTSP につなぐ（ブロックする）。つなげなければ av.FFmpegError など。"""
+        self._container = av.open(media.rtsp_url(cfg, stream), format="rtsp", timeout=_OPEN_TIMEOUT,
+                                  options={"rtsp_transport": "tcp", "fflags": "nobuffer"})
+        self._quit = threading.Event()
+        self.tracks: dict[str, QueueTrack] = {}
+        self._streams = []
+        for kind in ("video", "audio"):
+            found = getattr(self._container.streams, kind)
+            if found:
+                self._streams.append(found[0])
+                self.tracks[kind] = QueueTrack(kind, self._quit.set)
+
+    def start(self) -> None:
+        """読み始める。イベントループの中から呼ぶこと。"""
+        loop = asyncio.get_running_loop()
+        threading.Thread(target=self._run, args=(loop,), daemon=True, name="rtsp-reader").start()
+
+    def close(self) -> None:
+        """読み始める前にやめるとき。"""
+        self._quit.set()
+        self._container.close()
+
+    def _run(self, loop: asyncio.AbstractEventLoop) -> None:
+        try:
+            for packet in self._container.demux(*self._streams):
+                if self._quit.is_set():
+                    break
+                if packet.size and packet.pts is not None:
+                    loop.call_soon_threadsafe(self.tracks[packet.stream.type].queue.put_nowait, packet)
+        except Exception:  # noqa: BLE001, S110 - カメラが切った、届かなくなった等。トラックを終わらせるだけでよい
+            pass
+        finally:
+            self._container.close()
+            for track in self.tracks.values():
+                try:
+                    loop.call_soon_threadsafe(track.queue.put_nowait, None)
+                except RuntimeError:  # イベントループがもう無い
+                    pass
 
 
 class _Retimed(MediaStreamTrack):
@@ -81,10 +150,14 @@ class WebRtcSessions:
     async def answer(self, sdp: str, sdp_type: str = "offer", stream: str = media.SUB) -> RTCSessionDescription:
         """ブラウザの offer に対する answer を返し、ライブの映像と音声を送り始める。"""
         try:
-            player = await asyncio.to_thread(_open, self.cfg, stream)  # 接続はブロックするので、別スレッドで
+            reader = await asyncio.to_thread(_Reader, self.cfg, stream)  # 接続はブロックするので、別スレッドで
         except Exception as e:  # PyAV の例外は URL（認証情報つき）を含むことがあるので、種類だけ伝える
             raise MediaError(f"カメラの映像を開けない（{type(e).__name__}）。同時に見られるのは3接続まで") from None
-        tracks = [_Retimed(track) for track in (player.video, player.audio) if track is not None]
+        tracks = [_Retimed(track) for track in reader.tracks.values()]
+        if not tracks:
+            reader.close()
+            raise MediaError("カメラの映像に、映像も音声も無い")
+        reader.start()
         return await self.answer_tracks(sdp, sdp_type, tracks, codecs=_CODECS)
 
     async def answer_tracks(self, sdp: str, sdp_type: str, tracks: list[MediaStreamTrack], *,

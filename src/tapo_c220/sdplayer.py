@@ -14,10 +14,9 @@ import threading
 from fractions import Fraction
 
 import av
-from aiortc import MediaStreamTrack
-from aiortc.mediastreams import MediaStreamError
 
 from .sdcard import SdCard, SdCardError, TsReader
+from .webrtc import QueueTrack
 
 _FRAME_SECONDS = 0.02  # 音声を渡す1回ぶんの長さ
 
@@ -36,24 +35,6 @@ def _g711_table(form: str) -> list[int]:
             sample = (mantissa << 4) + 8 if exponent == 0 else ((mantissa << 4) + 0x108) << (exponent - 1)
             table.append(sample if v & 0x80 else -sample)
     return table
-
-
-class _QueueTrack(MediaStreamTrack):
-    """キューに入れられたもの（映像のパケットか音声のフレーム）を順に渡す。None が来たら終わり。"""
-
-    def __init__(self, kind: str):
-        super().__init__()
-        self.kind = kind
-        self.queue: asyncio.Queue = asyncio.Queue()
-
-    async def recv(self):
-        if self.readyState != "live":
-            raise MediaStreamError
-        item = await self.queue.get()
-        if item is None:
-            self.stop()
-            raise MediaStreamError
-        return item
 
 
 class _Feed:
@@ -80,7 +61,7 @@ class SdPlayer:
 
     def __init__(self, sd: SdCard, start: float):
         self.sd, self.start = sd, start
-        self.video, self.audio = _QueueTrack("video"), _QueueTrack("audio")
+        self.video, self.audio = QueueTrack("video"), QueueTrack("audio")
         self.error = ""
         self.finished = False  # 録画の終わりまで流し終えたか、エラーで止まった
         self._ts = TsReader()
