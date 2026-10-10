@@ -469,7 +469,13 @@ addEventListener("pagehide", () => sd.peer?.close());
 async function loadSdDay() {
   const day = $("sd-day").value;
   if (!day) return;
-  sd.segments = await api(`/api/sd/segments?date=${day}`);
+  try {
+    sd.segments = await api(`/api/sd/segments?date=${day}`);
+    sd.day = day;
+  } catch (error) {  // 再生・保存している間は、まだ開いていない日の一覧をカメラが出さない。選ぶ前の日に戻す
+    if (sd.day) $("sd-day").value = sd.day;
+    throw error;
+  }
   if (sd.segments.length) showWindow(sd.segments[sd.segments.length - 1].end - Number($("sd-zoom").value) * 0.4);  // いちばん新しい録画のあたり
   else drawTimeline();
 }

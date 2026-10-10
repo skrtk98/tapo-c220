@@ -10,6 +10,10 @@ ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP 
   scale で 2 倍以上を指定するとデータは速く届くが、音声が来なくなり、映像の時刻の進み方も等速のときと変わる
   （8 秒間に進んだ PTS は 2 倍で 7.9 秒、4 倍で 14 秒、16 倍で 8.9 秒）。扱いが定まらないので、等速だけを使う。
   end_time は守られず、指定を過ぎても流れ続けるので、必要なぶんを受け取ったらこちらから切る。
+- 取り出している間は、区間の一覧（searchVideoOfDay）を取れない。一覧に要る ID をカメラが出さなくなる（USER_ID_FULL、-71101）。
+  先に取っておいた ID も無効になる。取り出しの client_id にその ID を使うと一覧は取れるが、今度は取り出しのほうが止まる。
+  録画のある日・検知の記録・カードの状態は、取り出している間も取れる。
+  そこで、区間の一覧は最後に取れたものを覚えておき、取り出している間はそれを返す。
 """
 
 from __future__ import annotations
@@ -196,6 +200,7 @@ class SdCard:
         self.session = session or TapoSession()
         self.api, self.stream = self.session.api, self.session.stream
         self._playback_lock = asyncio.Lock()  # 再生は1本ずつ
+        self._segments: dict[str, list[Segment]] = {}  # 日付 → 最後に取れた区間の一覧（取り出している間に返す）
 
     # --- 一覧（443 番、pytapo） ---------------------------------------------------------------------------------------
 
@@ -218,16 +223,27 @@ class SdCard:
         return sorted(next(iter(day.values()))["date"] for day in found)
 
     async def segments(self, date: str) -> list[Segment]:
-        """その日（カメラの時刻での YYYYMMDD）の録画の区間。"""
+        """その日（カメラの時刻での YYYYMMDD）の録画の区間。
+        録画を取り出している間は、カメラが一覧を出さない。その間は、前に取れた一覧をそのまま返す（その後に増えた録画は入らない）。
+        前に取れた一覧が無ければ SdCardError。"""
         if not re.fullmatch(r"\d{8}", date):
             raise ValueError(f"日付は YYYYMMDD: {date}")
-        found = await self._call(lambda api: api.getRecordings(date))
+        try:
+            found = await self.api.call(lambda api: api.getRecordings(date))
+        except TapoApiError as e:
+            if "-71101" not in str(e):
+                raise SdCardError(str(e)) from None
+            if date in self._segments:
+                return list(self._segments[date])
+            raise SdCardError("録画を再生・保存している間は、その日の区間の一覧を取れない（カメラの制約）。"
+                              "止めてからやり直すこと") from None
         result = []
         for item in found:
             value = next(iter(item.values()))
             kind = value.get("vedio_type")
             result.append(Segment(float(value["startTime"]), float(value["endTime"]), _KINDS.get(kind, str(kind))))
-        return sorted(result, key=lambda s: s.start)
+        self._segments[date] = sorted(result, key=lambda s: s.start)
+        return list(self._segments[date])
 
     async def detections(self, start: float, end: float) -> list[dict]:
         """その間（UNIX 時刻）にカメラが検知して記録した出来事。start と end（UNIX 時刻）と、機種が返す種類の番号（alarm_type）。
