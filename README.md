@@ -34,7 +34,7 @@ examples/webui/           # 使用例：pyproject.toml、app.py、static/index.h
 ```
 
 ライブラリの追加の依存：`tapo-c220[tapo]`（設定、microSD の録画。pytapo と cryptography）、
-`tapo-c220[webrtc]`（ブラウザへの配信。aiortc）。無しでも RTSP・ONVIF・スピーカーは使える。
+`tapo-c220[packets]`（映像と音声をパケットとして取り出す。PyAV）。無しでも RTSP・ONVIF・スピーカーは使える。
 
 WebUI には認証が無い。既定では手元（127.0.0.1）でしか待ち受けない。録音・録画は、起こした場所の `recordings/`（`TAPO_RECORD_DIR`）に保存する。
 
@@ -71,11 +71,17 @@ async with TapoC220() as cam:                 # .env を読む
         ...
 ```
 
-ブラウザへのライブ配信は `tapo_c220.webrtc.WebRtcSessions`（aiortc が要る。`tapo-c220[webrtc]`）：
+映像と音声を自分のプログラムへ引き込む口は `tapo_c220.packets`（PyAV が要る。`tapo-c220[packets]`）。
+ライブも microSD の録画も、変換していないパケットの列（`Packet(kind, data, time, codec, rate, keyframe)`）として同じ形で渡す。
+WebRTC のような配信の方式は、ライブラリは知らない。受け取った側で載せ替える（WebRTC の例が `examples/webui/webrtc.py`）。
 
 ```python
-sessions = WebRtcSessions(cam.cfg)
-answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの offer を渡し、answer.sdp を返す
+packets = await cam.live_packets("stream2")    # packets.LivePackets。映像は H.264、音声は G.711 A-law 8kHz
+async for packet in packets:                   # 時刻（packet.time）は、カメラの RTCP のずれを直して途切れなく進む
+    ...
+await packets.aclose()                         # RTSP を返す（カメラの同時接続は3本まで）
+
+packets = cam.sdcard.packets(start)            # packets.SdPackets。録画を start（UNIX 時刻）から。position で今の位置
 ```
 
 | モジュール | 役割 |
@@ -83,7 +89,7 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | `tapo_c220.facade` | 全体の窓口の `TapoC220`。向き（left / right / up / down）を画面の動きに合わせる |
 | `tapo_c220.onvif` | ONVIF の最小限のクライアント（SOAP を手で組む。依存は httpx だけ） |
 | `tapo_c220.media` | RTSP の受信と変換（ffmpeg）。静止画、ライブ配信、録音・録画 |
-| `tapo_c220.webrtc` | ライブ映像と音声を WebRTC でブラウザへ送る（aiortc） |
+| `tapo_c220.packets` | ライブと録画の映像・音声を、変換していないパケットの列として渡す（PyAV） |
 | `tapo_c220.events` | 検知のイベントを ONVIF で受け取る |
 | `tapo_c220.tapo` | Tapo 独自のプロトコルへの窓口だけを置く。`TapoSession` が認証情報を持ち、下の2つを渡す |
 | `tapo_c220.tapo.api` | 443 番の制御 API の窓口 `TapoApi`（pytapo を別スレッドで呼ぶ。`[tapo]` の追加の依存が要る） |
@@ -91,7 +97,6 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | `tapo_c220.settings` | カメラの設定の読み書き（`CameraSettings`）。`tapo.api` を使う |
 | `tapo_c220.talk` | スピーカーへの音声。`tapo.stream` を使う |
 | `tapo_c220.sdcard` | microSD の録画。一覧は `tapo.api`、取り出しは `tapo.stream` を使う |
-| `tapo_c220.sdplayer` | microSD の録画を、指定した時刻から WebRTC で流し続ける |
 
 ## 調査結果
 
@@ -217,9 +222,10 @@ async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を
     ...
 ```
 
-ブラウザでの再生は `tapo_c220.sdplayer.SdPlayer`。指定した時刻からの録画を WebRTC のトラックにして、止めるまで流し続ける。
-映像の H.264 は変換せず送り、音声は µ-law 16kHz が WebRTC の標準の形ではないので、PCM に戻して Opus にする。
-いま流している位置（録画の時刻）は、TS の PTS の進みから求める（`position`）。
+録画をパケットの列として読むのは `sd.packets(start)`（`tapo_c220.packets.SdPackets`）。止めるまで、または録画の終わりまで続く。
+いま届いている位置（録画の時刻）は、TS の PTS の進みから求める（`position`）。
+ブラウザでの再生は使用例の側（`examples/webui/webrtc.py` の `SdPlayer`）にある。映像の H.264 は変換せず送り、
+音声は µ-law 16kHz が WebRTC の標準の形ではないので、PCM に戻して Opus にする。
 
 ### 設定（Tapo 独自の API）
 
@@ -278,7 +284,7 @@ async for event in cam.events():                    # やめるまで続く。Ev
 
 - ライブ映像と録画の再生を同時に 40 分流し続けて、止まらないこと、録画の区間の切れ目をまたいでも続くことを確かめた（Chromium）。
   このとき、サーバのメモリが毎分約 0.7MB ずつ増え続けた。原因は RTSP を読ませていた aiortc の `MediaPlayer` で、
-  自前のスレッドで読む形（`webrtc._Reader`）に替えると増えなくなった（8 分で +0.6MB）。数時間の連続は試していない。
+  自前のスレッドで読む形（`packets.LivePackets`）に替えると増えなくなった（8 分で +0.6MB）。数時間の連続は試していない。
 
 - ffmpeg は、起こしたプロセス（WebUI のサーバなど）が強制終了されても一緒に止まる（Linux の `setpriv --pdeathsig` を通して起こす）。
   以前は、ファイルへ録音・録画している ffmpeg が残り、カメラの RTSP の同時接続（3本）を埋めたままになった。

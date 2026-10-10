@@ -306,6 +306,12 @@ class SdCard:
         finally:
             await connection.close()
 
+    def packets(self, start: float):
+        """時刻 start からの録画を、変換していないパケット（映像は H.264、音声は G.711）の列として開く（packets.SdPackets）。
+        `async for` で読み、やめるときは aclose() を呼ぶ。PyAV が要る（`tapo-c220[packets]`）。"""
+        from .packets import SdPackets
+        return SdPackets(self, start)
+
     async def export(self, start: float, seconds: float, path: str | Path, *,
                      progress: Callable[[float], None] | None = None) -> float:
         """時刻 start から seconds 秒ぶんの録画を MP4（H.264 はそのまま、音声は AAC）として保存する。保存できた秒数を返す。

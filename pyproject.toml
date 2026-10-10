@@ -13,8 +13,8 @@ tapo = [  # Tapo 独自の API と録画（設定の読み書き、microSD の�
     "cryptography>=50.0.2",
     "pytapo>=3.4.26",
 ]
-webrtc = [  # ライブ映像・録画をブラウザへ送る（webrtc、sdplayer）
-    "aiortc>=1.9",
+packets = [  # 映像と音声を、変換していないパケットとして取り出す（packets）
+    "av>=14",
 ]
 
 [project.scripts]
@@ -24,16 +24,21 @@ tapo-c220 = "tapo_c220.cli:main"
 dev = [
     "pytest>=8",
     "pytest-asyncio>=1.0",
-    "tapo-c220[tapo,webrtc]",
+    "tapo-c220[packets,tapo]",
+    "tapo-c220-webui",
 ]
 
 [build-system]
 requires = ["uv_build>=0.11.17,<0.12.0"]
 build-backend = "uv_build"
 
+[tool.uv.sources]
+tapo-c220-webui = { workspace = true }
+
 [tool.uv.workspace]
 members = ["examples/*"]  # 使用例（ライブラリには含めない）
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "examples/webui/tests"]
+pythonpath = ["examples/webui"]

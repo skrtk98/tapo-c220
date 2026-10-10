@@ -1136,53 +1136,57 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+packets = [
+    { name = "av" },
+]
 tapo = [
     { name = "cryptography" },
     { name = "pytapo" },
-]
-webrtc = [
-    { name = "aiortc" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "tapo-c220", extra = ["tapo", "webrtc"] },
+    { name = "tapo-c220", extra = ["packets", "tapo"] },
+    { name = "tapo-c220-webui" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "aiortc", marker = "extra == 'webrtc'", specifier = ">=1.9" },
+    { name = "av", marker = "extra == 'packets'", specifier = ">=14" },
     { name = "cryptography", marker = "extra == 'tapo'", specifier = ">=50.0.2" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pytapo", marker = "extra == 'tapo'", specifier = ">=3.4.26" },
 ]
-provides-extras = ["tapo", "webrtc"]
+provides-extras = ["tapo", "packets"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=1.0" },
-    { name = "tapo-c220", extras = ["tapo", "webrtc"] },
+    { name = "tapo-c220", extras = ["packets", "tapo"] },
+    { name = "tapo-c220-webui", editable = "examples/webui" },
 ]
 
 [[package]]
 name = "tapo-c220-webui"
 version = "0.1.0"
-source = { virtual = "examples/webui" }
+source = { editable = "examples/webui" }
 dependencies = [
+    { name = "aiortc" },
     { name = "fastapi" },
     { name = "python-multipart" },
-    { name = "tapo-c220", extra = ["tapo", "webrtc"] },
+    { name = "tapo-c220", extra = ["packets", "tapo"] },
     { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiortc", specifier = ">=1.9" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "python-multipart", specifier = ">=0.0.20" },
-    { name = "tapo-c220", extras = ["tapo", "webrtc"], editable = "." },
+    { name = "tapo-c220", extras = ["packets", "tapo"], editable = "." },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
 

@@ -73,6 +73,12 @@ class TapoC220:
     def live_audio(self) -> AsyncIterator[bytes]:
         return media.live_audio(self.cfg)
 
+    async def live_packets(self, stream: str = media.SUB):
+        """ライブの映像（H.264）と音声（G.711）を、変換していないパケットの列として開く（packets.LivePackets）。
+        `async for` で読み、やめるときは aclose() を呼ぶ。PyAV が要る（`tapo-c220[packets]`）。"""
+        from .packets import LivePackets
+        return await LivePackets.open(self.cfg, stream)
+
     async def record(self, path: str | Path, *, kind: str = "audio", stream: str = media.MAIN,
                      max_seconds: float | None = None) -> Recording:
         """録音（kind="audio"）か録画（kind="video"）を始める。返した Recording の stop() で終える。"""

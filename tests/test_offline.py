@@ -118,36 +118,6 @@ def test_talk_helpers():
     assert _reply_params(b'--b\r\n\r\n{"params":{"session_id":"7","error_code":0}}\r\n') == {"session_id": "7", "error_code": 0}
 
 
-async def test_webrtc_retimes_sender_report_jumps():
-    """カメラの pts は約 0.35 秒戻っては約 0.42 秒飛ぶ。付け直した時刻は、途切れなく進む。"""
-    from fractions import Fraction
-
-    import av
-    from aiortc import MediaStreamTrack
-
-    from tapo_c220.webrtc import _Retimed
-
-    class Source(MediaStreamTrack):
-        def __init__(self, kind, time_base, size, stamps):
-            super().__init__()
-            self.kind, self._packets = kind, []
-            for pts in stamps:
-                packet = av.Packet(size)
-                packet.pts, packet.time_base = pts, time_base
-                self._packets.append(packet)
-
-        async def recv(self):
-            return self._packets.pop(0)
-
-    frame = 3000  # 90kHz で 1/30 秒
-    video = _Retimed(Source("video", Fraction(1, 90000), 10,
-                            [50000, 50000 + frame, 50000 + 2 * frame - 31500, 50000 + 3 * frame - 31500,
-                             50000 + 4 * frame + 6300]))
-    assert [(await video.recv()).pts for _ in range(5)] == [0, frame, 2 * frame, 3 * frame, 4 * frame]
-    audio = _Retimed(Source("audio", Fraction(1, 8000), 512, [9000, 9512, 6900, 7412]))
-    assert [(await audio.recv()).pts for _ in range(4)] == [0, 512, 1024, 1536]
-
-
 def test_sdcard_ts_reader_and_decryptor():
     """スピーカー用に組み立てた TS（音声だけ）を、SD カード用の読み取りで元に戻せる。断片の切れ目は任意。"""
     import hashlib
@@ -170,21 +140,6 @@ def test_sdcard_ts_reader_and_decryptor():
     assert decrypt(encryptor.update(b"hello world" + b"\x05" * 5) + encryptor.finalize()) == b"hello world"
     with pytest.raises(SdCardError):
         decryptor("nonce", "WRONG")(b"\x00" * 32)
-
-
-def test_sdplayer_audio_frames():
-    """録画の G.711 を PCM に戻し、20ms ずつのフレームにして音声のトラックへ渡す。"""
-    from tapo_c220.sdplayer import SdPlayer, _g711_table
-
-    assert _g711_table("mulaw")[0xFF] == 0 and _g711_table("mulaw")[0x00] == -32124 and _g711_table("mulaw")[0x80] == 32124
-    assert _g711_table("alaw")[0xD5] == 8 and _g711_table("alaw")[0x55] == -8
-    player = SdPlayer(None, 1000.0)
-    player._ts.codec = ("mulaw", 16000)
-    player._push_audio(b"\xff" * 500)   # 320 標本で1フレーム。余りの 180 は次に回る
-    player._push_audio(b"\xff" * 200)
-    frames = [player.audio.queue.get_nowait() for _ in range(2)]
-    assert [(f.samples, f.sample_rate, f.pts) for f in frames] == [(320, 16000, 0), (320, 16000, 320)]
-    assert player.audio.queue.empty() and player.position == 1000.0
 
 
 def test_event_notification():
@@ -374,17 +329,10 @@ async def test_cli_writes_settings():
                      ("set_detection", ("bark", False, None), {})]
 
 
-async def test_webrtc_stops_tracks_when_offer_is_cancelled(monkeypatch):
-    from tapo_c220.webrtc import QueueTrack, WebRtcSessions
+def test_retimer_smooths_sender_report_jumps():
+    from tapo_c220.packets import Retimer
 
-    stopped = []
-    sessions = WebRtcSessions(CFG)
-    track = QueueTrack("video", lambda: stopped.append(True))
-
-    async def cancelled(self, description):
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr("tapo_c220.webrtc.RTCPeerConnection.setRemoteDescription", cancelled)
-    with pytest.raises(asyncio.CancelledError):
-        await sessions.answer_tracks("v=0", "offer", [track])
-    assert stopped and len(sessions) == 0
+    retime = Retimer()
+    # 40ms ごとに進むはずの映像の時刻が、0.35 秒戻っては 0.42 秒飛ぶ（C220 の RTCP のずれ）
+    out = [retime(pts) for pts in (5.00, 5.04, 5.08, 4.73, 4.77, 5.19, 5.23)]
+    assert out == pytest.approx([0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24])

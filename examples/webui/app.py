@@ -22,10 +22,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from tapo_c220 import MAIN, SUB, Direction, MediaError, OnvifError, Recording, StreamError, TapoC220
-from tapo_c220.sdplayer import SdPlayer
 from tapo_c220.settings import DayNight, Detection
 from tapo_c220.tapo.api import TapoApiError
-from tapo_c220.webrtc import WebRtcSessions
+
+from webrtc import SdPlayer, WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
 _NAME = re.compile(r"^(sd-)?[0-9]{8}-[0-9]{6}(-[0-9]{3})?\.(wav|mp4)$")
