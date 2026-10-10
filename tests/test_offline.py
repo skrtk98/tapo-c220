@@ -308,3 +308,67 @@ async def test_talk_completes_when_camera_reads():
     async with server:
         await play_alaw(stream, b"\xd5" * 800)
     assert got.count(b"audio/mp2t") == 6  # 番組表と、20ms ぶんが5つ
+
+
+async def test_segments_come_from_memory_while_camera_refuses():
+    from types import SimpleNamespace
+
+    from tapo_c220.sdcard import SdCard, SdCardError
+    from tapo_c220.tapo.api import TapoApiError
+
+    class Api:
+        busy = False
+
+        async def call(self, work):
+            if self.busy:  # 録画を取り出している間のカメラの応答
+                raise TapoApiError('カメラの API を呼べなかった（Error: USER_ID_FULL, "error_code": -71101）')
+            return work(SimpleNamespace(getRecordings=lambda date: [
+                {"search_video_results_1": {"startTime": 200, "endTime": 300, "vedio_type": 2}},
+                {"search_video_results_0": {"startTime": 100, "endTime": 200, "vedio_type": 1}}]))
+
+    api = Api()
+    sd = SdCard(SimpleNamespace(api=api, stream=None))
+    first = await sd.segments("20261009")
+    assert [(s.start, s.kind) for s in first] == [(100.0, "continuous"), (200.0, "event")]
+    api.busy = True
+    assert await sd.segments("20261009") == first
+    with pytest.raises(SdCardError, match="再生・保存している間"):
+        await sd.segments("20261010")
+
+
+def test_cli_arguments_and_values():
+    from tapo_c220 import cli
+
+    args = cli._parser().parse_args(["sd", "export", "2026-10-09 15:08:45", "30", "out.mp4"])
+    assert (args.command, args.action, args.seconds) == ("sd", "export", 30.0)
+    assert cli._timestamp("1791558525") == 1791558525.0
+    assert cli._local(cli._timestamp("2026-10-09 15:08:45")) == "2026-10-09 15:08:45"
+    with pytest.raises(ValueError, match="時刻"):
+        cli._timestamp("yesterday")
+    assert cli._SETTERS["day-night"][0]("night") == "on" and cli._SETTERS["mic-mute"][0]("off") is False
+    with pytest.raises(ValueError):
+        cli._SETTERS["brightness"][0]("101")
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args(["set", "no-such-setting", "on"])
+
+
+async def test_cli_writes_settings():
+    from types import SimpleNamespace
+
+    from tapo_c220 import cli
+
+    calls = []
+
+    class Settings:
+        def __getattr__(self, name):
+            async def record(*args, **kwargs):
+                calls.append((name, args, kwargs))
+            return record
+
+    cam = SimpleNamespace(settings=Settings())
+    for argv in (["set", "day-night", "day"], ["set", "sharpness", "70"], ["set", "osd-week", "on"],
+                 ["detect", "person", "on", "--sensitivity", "40"], ["detect", "bark", "off"]):
+        await cli._settings(cam, cli._parser().parse_args(argv))
+    assert calls == [("set_day_night", ("off",), {}), ("set_image", (), {"sharpness": 70}),
+                     ("set_osd", (), {"week": True}), ("set_detection", ("person", True, 40), {}),
+                     ("set_detection", ("bark", False, None), {})]
