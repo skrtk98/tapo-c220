@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import threading
+import time
 from collections.abc import Awaitable, Callable
 
 import av
@@ -80,11 +82,18 @@ class _Reader:
 
     def _run(self, loop: asyncio.AbstractEventLoop) -> None:
         try:
-            for packet in self._container.demux(*self._streams):
-                if self._quit.is_set():
-                    break
-                if packet.size and packet.pts is not None:
-                    loop.call_soon_threadsafe(self.tracks[packet.stream.type].queue.put_nowait, packet)
+            while not self._quit.is_set():
+                try:
+                    for packet in self._container.demux(*self._streams):
+                        if self._quit.is_set():
+                            break
+                        if packet.size and packet.pts is not None:
+                            loop.call_soon_threadsafe(self.tracks[packet.stream.type].queue.put_nowait, packet)
+                    break  # カメラが流すのを終えた
+                except av.FFmpegError as e:
+                    if e.errno != errno.EAGAIN:  # 一時的に読めないだけなら、少し待って続ける
+                        raise
+                    time.sleep(0.01)
         except Exception:  # noqa: BLE001, S110 - カメラが切った、届かなくなった等。トラックを終わらせるだけでよい
             pass
         finally:
@@ -182,10 +191,10 @@ class WebRtcSessions:
                                                      if c.mimeType == codecs[track.kind]])
             await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
             await peer.setLocalDescription(await peer.createAnswer())
-        except Exception as e:
-            await self._close(peer)
+        except BaseException as e:  # 要求が取り消されたとき（CancelledError）も、RTSP を残さない
             for track in tracks:  # 送り始める前に失敗したトラックは、自分で止める（ライブなら RTSP が閉じる）
                 track.stop()
+            await asyncio.shield(self._close(peer))
             if isinstance(e, ValueError):
                 raise ValueError(f"offer を受け付けられない（{e}）") from None
             raise

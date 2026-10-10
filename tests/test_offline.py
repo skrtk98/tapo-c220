@@ -372,3 +372,19 @@ async def test_cli_writes_settings():
     assert calls == [("set_day_night", ("off",), {}), ("set_image", (), {"sharpness": 70}),
                      ("set_osd", (), {"week": True}), ("set_detection", ("person", True, 40), {}),
                      ("set_detection", ("bark", False, None), {})]
+
+
+async def test_webrtc_stops_tracks_when_offer_is_cancelled(monkeypatch):
+    from tapo_c220.webrtc import QueueTrack, WebRtcSessions
+
+    stopped = []
+    sessions = WebRtcSessions(CFG)
+    track = QueueTrack("video", lambda: stopped.append(True))
+
+    async def cancelled(self, description):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("tapo_c220.webrtc.RTCPeerConnection.setRemoteDescription", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await sessions.answer_tracks("v=0", "offer", [track])
+    assert stopped and len(sessions) == 0
