@@ -54,15 +54,29 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | `tapo_c220.onvif` | ONVIF の最小限のクライアント（SOAP を手で組む。依存は httpx だけ） |
 | `tapo_c220.media` | RTSP の受信と変換（ffmpeg）。静止画、ライブ配信、録音・録画 |
 | `tapo_c220.webrtc` | ライブ映像と音声を WebRTC でブラウザへ送る（aiortc） |
-| `tapo_c220.talk` | Tapo 独自の双方向音声（スピーカー） |
-| `tapo_c220.sdcard` | microSD の録画の一覧（pytapo）と取り出し。`[tapo]` の追加の依存が要る |
-| `tapo_c220.sdplayer` | microSD の録画を、指定した時刻から WebRTC で流し続ける |
-| `tapo_c220.api` | Tapo 独自の API（443 番）への窓口（pytapo を別スレッドで呼ぶ） |
-| `tapo_c220.settings` | カメラの設定の読み書き（`CameraSettings`）。`[tapo]` の追加の依存が要る |
 | `tapo_c220.events` | 検知のイベントを ONVIF で受け取る |
+| `tapo_c220.tapo` | Tapo 独自のプロトコル。`TapoSession` が認証情報を持ち、下の2つの窓口を渡す |
+| `tapo_c220.tapo.api` | 443 番の制御 API の窓口 `TapoApi`（pytapo を別スレッドで呼ぶ。`[tapo]` の追加の依存が要る） |
+| `tapo_c220.tapo.stream` | 8800 番のストリームの窓口 `TapoStream`（接続と認証。依存なし） |
+| `tapo_c220.tapo.settings` | カメラの設定の読み書き（`CameraSettings`）。api を使う |
+| `tapo_c220.tapo.talk` | スピーカーへの音声。stream を使う |
+| `tapo_c220.tapo.sdcard` | microSD の録画。一覧は api、取り出しは stream を使う |
+| `tapo_c220.tapo.sdplayer` | microSD の録画を、指定した時刻から WebRTC で流し続ける |
 | `tapo_c220.webui` | FastAPI の WebUI（`TapoC220` を HTTP から呼ぶだけ） |
 
 ## 調査結果
+
+### 経路の分け方
+
+| 分類 | 経路 | ポート | 通信の形 | 認証 | 使いみち |
+| --- | --- | --- | --- | --- | --- |
+| 標準 | RTSP | 554 | RTP を流し続ける | カメラアカウント（Digest） | 映像・音声、録音・録画、静止画 |
+| 標準 | ONVIF | 2020 | SOAP を1往復ずつ | カメラアカウント（WS-Security） | 首振り、検知イベント |
+| Tapo 独自 | 制御 API | 443 | 暗号化した JSON を1往復ずつ | Tapo アカウント（ユーザは admin） | 設定、録画の一覧、検知の記録 |
+| Tapo 独自 | ストリーム | 8800 | 1本の接続に流し続ける | Tapo アカウント（接続ごとに Digest） | スピーカー、録画の取り出し |
+
+コードもこの分け方に合わせてある。標準の経路は `media`（RTSP）と `onvif`・`events`（ONVIF）、Tapo 独自の経路は `tapo` の下で、
+443 番の窓口が `tapo.api.TapoApi`、8800 番の窓口が `tapo.stream.TapoStream`。
 
 ### どの機能を、どの経路で実現できたか
 
@@ -151,9 +165,7 @@ ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP 
   録画の無い時刻を指定すると、映像は届かず終了の通知だけが返る。
 
 ```python
-from tapo_c220.sdcard import SdCard
-
-sd = SdCard(cam.cfg)
+sd = cam.sdcard                               # tapo_c220.tapo.sdcard.SdCard
 days = await sd.days()                         # ["20261008", "20261009", ...]
 segments = await sd.segments(days[-1])         # [Segment(start, end, kind), ...]
 await sd.export(segments[-1].start, 60, "clip.mp4")   # 60 秒ぶんを MP4 に（約 60 秒かかる）
@@ -161,13 +173,13 @@ async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を
     ...
 ```
 
-ブラウザでの再生は `tapo_c220.sdplayer.SdPlayer`。指定した時刻からの録画を WebRTC のトラックにして、止めるまで流し続ける。
+ブラウザでの再生は `tapo_c220.tapo.sdplayer.SdPlayer`。指定した時刻からの録画を WebRTC のトラックにして、止めるまで流し続ける。
 映像の H.264 は変換せず送り、音声は µ-law 16kHz が WebRTC の標準の形ではないので、PCM に戻して Opus にする。
 いま流している位置（録画の時刻）は、TS の PTS の進みから求める（`position`）。
 
 ### 設定（Tapo 独自の API）
 
-`tapo_c220.settings.CameraSettings`（`cam.settings` でも取れる）。認証は Tapo アカウントのパスワード（ユーザは admin）。
+`tapo_c220.tapo.settings.CameraSettings`（`cam.settings` でも取れる）。認証は Tapo アカウントのパスワード（ユーザは admin）。
 
 ```python
 s = cam.settings

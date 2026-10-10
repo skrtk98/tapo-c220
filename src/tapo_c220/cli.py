@@ -9,7 +9,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from . import Direction, MediaError, OnvifError, TalkError, TapoC220
+from . import Direction, MediaError, OnvifError, StreamError, TapoC220
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -69,7 +69,7 @@ def main() -> None:
     p.add_argument("tilt", type=float)
     try:
         asyncio.run(_run(parser.parse_args()))
-    except (OnvifError, MediaError, TalkError, RuntimeError) as e:
+    except (OnvifError, MediaError, StreamError, RuntimeError) as e:
         sys.exit(f"失敗: {e}")
     except KeyboardInterrupt:
         sys.exit(130)

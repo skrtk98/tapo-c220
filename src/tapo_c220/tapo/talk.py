@@ -1,26 +1,20 @@
 """Tapo 独自の双方向音声（カメラのスピーカーから鳴らす）。
 
 RTSP/ONVIF の標準にはカメラへ音声を送る経路が無い（SDP に送信用のトラックが無く、GetAudioOutputs も空）。
-Tapo 独自のプロトコル（8800 番、HTTP の Digest 認証 + multipart）を使う。手順は go2rtc の pkg/tapo を参考にした：
+Tapo 独自のストリーム（8800 番。接続と認証は stream.TapoStream）を使う：
 
-1. POST /stream を Digest 認証する。ユーザは admin、パスワードは Tapo アカウント（クラウド）のパスワードの
-   大文字の SHA256（encrypt_type="3"）または MD5。カメラアカウントのパスワードではない。
-2. {"params":{"talk":{"mode":"aec"},"method":"get"},...} を送り、session_id を受け取る。
-3. A-law の音声を MPEG-TS（PES のストリーム種別 0x90）に包み、20ms ずつ実時間の速さで multipart として送る。
-
-非公式のプロトコルなので、ファームウェアの更新で使えなくなる可能性がある。
+1. {"params":{"talk":{"mode":"aec"},"method":"get"},...} を送り、session_id を受け取る。
+2. A-law の音声を MPEG-TS（PES のストリーム種別 0x90）に包み、20ms ずつ実時間の速さで multipart として送る。
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import os
-import re
 import time
 
-_BOUNDARY = b"----client-stream-boundary--"
+from .stream import Connection, StreamError, TapoStream
+
 _RATE = 8000           # カメラへ送る A-law のサンプリング周波数
 _CHUNK = 160           # 20ms ぶんのバイト数
 _STREAM_TYPE_PCMA = 0x90
@@ -32,7 +26,7 @@ _DRAIN_TIMEOUT = 5.0    # 送信が1回詰まって待てる時間（カメラ�
 _SILENCE = b"\xd5"      # A-law の 0
 
 
-class TalkError(RuntimeError):
+class TalkError(StreamError):
     """カメラのスピーカーへ送れなかった。partial が真なら、すでに一部は鳴っている（やり直すと重複する）。"""
 
     def __init__(self, message: str, *, partial: bool = False):
@@ -107,55 +101,6 @@ class Muxer:
         return out
 
 
-def digest_password(cloud_password: str, encrypt_type: str) -> str:
-    algorithm = hashlib.sha256 if encrypt_type == "3" else hashlib.md5
-    return algorithm(cloud_password.encode()).hexdigest().upper()
-
-
-def _md5(*parts: str) -> str:
-    return hashlib.md5(":".join(parts).encode()).hexdigest()
-
-
-def _stream_request(host: str, port: int, extra: str = "") -> bytes:
-    return (f"POST /stream HTTP/1.1\r\nHost: {host}:{port}\r\n"
-            f"Content-Type: multipart/mixed; boundary=--client-stream-boundary--\r\n{extra}"
-            "Content-Length: 0\r\n\r\n").encode()
-
-
-def _field(text: str, name: str) -> str:
-    found = re.search(name + r'="([^"]*)"', text)
-    return found.group(1) if found else ""
-
-
-async def authenticate(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, host: str, port: int,
-                       cloud_password: str, timeout: float = 10.0) -> tuple[str, str]:
-    """8800 番の /stream を Digest 認証する。
-    成功したら、SD カードの録画の復号に使う（Key-Exchange の nonce, ハッシュしたパスワード）を返す。"""
-    async def headers() -> str:
-        return (await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)).decode(errors="replace")
-
-    writer.write(_stream_request(host, port))
-    challenge = await headers()
-    if "401" not in challenge.split("\r\n", 1)[0] or not _field(challenge, "nonce"):
-        raise TalkError("カメラが認証を求めなかった（想定外の応答）")
-    realm, nonce, qop = _field(challenge, "realm"), _field(challenge, "nonce"), _field(challenge, "qop") or "auth"
-    password = digest_password(cloud_password, _field(challenge, "encrypt_type"))
-    cnonce, nc = os.urandom(16).hex(), "00000001"
-    response = _md5(_md5("admin", realm, password), nonce, nc, cnonce, qop, _md5("POST", "/stream"))
-    writer.write(_stream_request(
-        host, port,
-        f'Authorization: Digest username="admin", realm="{realm}", nonce="{nonce}", uri="/stream", '
-        f'qop={qop}, nc={nc}, cnonce="{cnonce}", response="{response}", opaque="{_field(challenge, "opaque")}", '
-        "algorithm=MD5\r\n",
-    ))
-    answer = await headers()
-    if " 200" not in answer.split("\r\n", 1)[0]:
-        raise TalkError(f"カメラの認証に失敗した（{answer.split(chr(13), 1)[0].strip()}）。"
-                        "Tapo アカウントのパスワードを確かめること")
-    exchange = re.search(r"Key-Exchange: ([^\r\n]*)", answer)
-    return _field(exchange.group(1) if exchange else "", "nonce"), password
-
-
 def _reply_params(reply: bytes) -> dict | None:
     """開始の応答（multipart の中の JSON）を、最後まで届いていれば解析して params を返す。途中なら None。"""
     start = reply.find(b"{")
@@ -172,11 +117,9 @@ def _reply_params(reply: bytes) -> dict | None:
 class TapoTalk:
     """カメラのスピーカーへ音声を送る1回の接続。`async with` で使う。"""
 
-    def __init__(self, host: str, cloud_password: str, *, port: int = 8800, timeout: float = 10.0):
-        self.host, self.port, self.timeout = host, port, timeout
-        self._password = cloud_password
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+    def __init__(self, stream: TapoStream):
+        self.stream = stream
+        self._connection: Connection | None = None
         self._session = ""
         self._mux = Muxer()
         self._drain: asyncio.Task | None = None
@@ -192,26 +135,19 @@ class TapoTalk:
 
     async def open(self) -> None:
         """接続して認証し、双方向音声を始める。全体に期限がある（応答を少しずつ返し続けるカメラで止まらない）。"""
-        if not self._password:
-            raise TalkError("TAPO_CLOUD_PASSWORD（Tapo アカウントのパスワード）が設定されていない")
         try:
-            await asyncio.wait_for(self._open(), self.timeout * 3)
+            await asyncio.wait_for(self._open(), self.stream.timeout * 3)
         except asyncio.TimeoutError:
             await self.close()
             raise TalkError("カメラの応答が遅すぎる") from None
-        except OSError as e:
-            raise TalkError(f"カメラの 8800 番につながらない（{type(e).__name__}）") from None
 
     async def _open(self) -> None:
-        self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
+        self._connection = await self.stream.connect()
         try:
-            await authenticate(self._reader, self._writer, self.host, self.port, self._password, self.timeout)
-            body = json.dumps({"params": {"talk": {"mode": "aec"}, "method": "get"}, "seq": 3, "type": "request"})
-            self._writer.write(_BOUNDARY + b"\r\nContent-Type: application/json\r\nContent-Length: "
-                               + str(len(body)).encode() + b"\r\n\r\n" + body.encode() + b"\r\n")
+            self._connection.request({"talk": {"mode": "aec"}, "method": "get"}, seq=3)
             reply, params = b"", None
             while params is None:
-                chunk = await self._reader.read(4096)
+                chunk = await self._connection.reader.read(4096)
                 if not chunk:
                     raise TalkError("双方向音声の開始の応答が無かった")
                 reply += chunk
@@ -224,6 +160,9 @@ class TapoTalk:
             self._session = str(session)
             self._drain = asyncio.create_task(self._discard())
             self._write(self._mux.header())
+        except OSError as e:
+            await self.close()
+            raise TalkError(f"カメラとの接続が切れた（{type(e).__name__}）") from None
         except BaseException:
             await self.close()
             raise
@@ -231,14 +170,13 @@ class TapoTalk:
     async def _discard(self) -> None:
         """カメラからの応答を読み捨てる（詰まらせない）。"""
         try:
-            while await self._reader.read(4096):
+            while await self._connection.reader.read(4096):
                 pass
         except (OSError, asyncio.CancelledError):
             pass
 
     def _write(self, body: bytes) -> None:
-        self._writer.write(_BOUNDARY + b"\r\nContent-Type: audio/mp2t\r\nX-If-Encrypt: 0\r\nX-Session-Id: "
-                           + self._session.encode() + b"\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        self._connection.part("audio/mp2t", body, f"X-If-Encrypt: 0\r\nX-Session-Id: {self._session}\r\n")
 
     async def send(self, alaw: bytes) -> None:
         """A-law（8kHz）の音声を、実時間の速さで送る。送り終えるまで戻らない。
@@ -253,7 +191,7 @@ class TapoTalk:
         for index in range(0, len(alaw), _CHUNK):
             chunk = alaw[index:index + _CHUNK].ljust(_CHUNK, _SILENCE)   # 端数は無音で埋める
             self._write(self._mux.audio(chunk))
-            await asyncio.wait_for(self._writer.drain(), _DRAIN_TIMEOUT)
+            await asyncio.wait_for(self._connection.writer.drain(), _DRAIN_TIMEOUT)
             self.sent = True  # 最初の送信が通ってから（バッファに入っただけでは、まだ鳴っていない）
             wait = start + (index // _CHUNK + 1) * _CHUNK / _RATE - time.monotonic()
             if wait > 0:
@@ -264,18 +202,13 @@ class TapoTalk:
             self._drain.cancel()
             await asyncio.gather(self._drain, return_exceptions=True)
             self._drain = None
-        if self._writer:
-            writer, self._writer = self._writer, None
-            writer.close()
-            try:
-                # カメラが受信を止めていると、残りの送信を待って閉じられない。待ちすぎず、接続を破棄する
-                await asyncio.wait_for(writer.wait_closed(), 2.0)
-            except (OSError, asyncio.TimeoutError):
-                writer.transport.abort()
+        if self._connection:
+            connection, self._connection = self._connection, None
+            await connection.close()
 
 
-async def play_alaw(host: str, cloud_password: str, alaw: bytes, *, port: int = 8800) -> None:
+async def play_alaw(stream: TapoStream, alaw: bytes) -> None:
     """A-law（8kHz モノラル）の音声を、カメラのスピーカーで鳴らす。"""
-    async with TapoTalk(host, cloud_password, port=port) as talk:
+    async with TapoTalk(stream) as talk:
         await talk.send(alaw)
         await asyncio.sleep(0.3)  # 送り終えたあと、スピーカーが鳴り終わるまで

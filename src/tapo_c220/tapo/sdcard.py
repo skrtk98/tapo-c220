@@ -3,8 +3,8 @@
 ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP でも再生できない。どちらも Tapo 独自の経路を使う。
 認証はどちらも Tapo アカウント（クラウド）のパスワード。
 
-- 一覧（録画のある日、1日の中の区間、カードの状態）：443 番の独自の API。ログインの手順が込み入っているので pytapo に任せる。
-- 取り出し：8800 番の /stream に、スピーカーと同じ Digest 認証でつなぎ、playback の要求を送る。
+- 一覧（録画のある日、1日の中の区間、カードの状態）：443 番の制御 API（api.TapoApi）。
+- 取り出し：8800 番のストリーム（stream.TapoStream）につなぎ、playback の要求を送る。
   録画は AES-CBC で暗号化された MPEG-TS（映像は H.264、音声は G.711。この個体は µ-law 16kHz でストリーム種別 0x91）として届く。
   ファイルの転送ではなく「再生」なので、録画の長さと同じ時間がかかる。
   scale で 2 倍以上を指定するとデータは速く届くが、音声が来なくなり、映像の時刻の進み方も等速のときと変わる
@@ -16,21 +16,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import re
 import tempfile
-import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from .api import TapoApi, TapoApiError
-from .config import TapoConfig
-from .media import MediaError
-from .talk import TalkError, authenticate, crc32_mpeg
+from ..media import MediaError
+from . import TapoSession
+from .api import TapoApiError
+from .stream import StreamError
+from .talk import crc32_mpeg
 
-_BOUNDARY = b"----client-stream-boundary--"
 _MAX_PART = 4 * 1024 * 1024    # 1つの部分の大きさの上限
 # 音声のストリーム種別 → (ffmpeg の形式名, サンプリング周波数)。ファームウェアによって A-law 8kHz か µ-law 16kHz
 _AUDIO_TYPES = {0x90: ("alaw", 8000), 0x91: ("mulaw", 16000)}
@@ -40,7 +38,7 @@ _STALL_TIMEOUT = 15.0          # 途中でこれだけ何も届かなければ�
 _KINDS = {1: "continuous", 2: "event"}  # 区間の種別（vedio_type）。1 は長く連続した区間、2 は短い区間として返る
 
 
-class SdCardError(TalkError):
+class SdCardError(StreamError):
     pass
 
 
@@ -194,9 +192,9 @@ async def _read_parts(reader: asyncio.StreamReader, timeout: Callable[[], float]
 
 
 class SdCard:
-    def __init__(self, cfg: TapoConfig, *, api: TapoApi | None = None, timeout: float = 10.0):
-        self.cfg, self.timeout = cfg, timeout
-        self.api = api or TapoApi(cfg)
+    def __init__(self, session: TapoSession | None = None):
+        self.session = session or TapoSession()
+        self.api, self.stream = self.session.api, self.session.stream
         self._playback_lock = asyncio.Lock()  # 再生は1本ずつ
 
     # --- 一覧（443 番、pytapo） ---------------------------------------------------------------------------------------
@@ -266,23 +264,15 @@ class SdCard:
 
     async def _playback(self, start: float) -> AsyncIterator[bytes]:
         waiting = _FIRST_DATA_TIMEOUT
+        connection = await self.stream.connect()
         try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(self.cfg.host, self.cfg.talk_port),
-                                                    self.timeout)
-        except (OSError, asyncio.TimeoutError) as e:
-            raise SdCardError(f"カメラの 8800 番につながらない（{type(e).__name__}）") from None
-        try:
-            nonce, password = await authenticate(reader, writer, self.cfg.host, self.cfg.talk_port,
-                                                 self.cfg.cloud_password, self.timeout)
-            decrypt = decryptor(nonce, password)
-            body = json.dumps({"type": "request", "seq": 1, "params": {"playback": {
+            decrypt = decryptor(connection.nonce, connection.password)
+            connection.request({"playback": {
                 "client_id": 1, "channels": [0], "scale": "1/1", "start_time": str(int(start)),
-                "end_time": str(int(start) + 86400), "event_type": [1, 2]}, "method": "get"}})
-            writer.write(_BOUNDARY + b"\r\nContent-Type: application/json\r\nContent-Length: "
-                         + str(len(body)).encode() + b"\r\n\r\n" + body.encode() + b"\r\n")
+                "end_time": str(int(start) + 86400), "event_type": [1, 2]}, "method": "get"})
             got_video = False
             try:
-                async for headers, data in _read_parts(reader, lambda: waiting):
+                async for headers, data in _read_parts(connection.reader, lambda: waiting):
                     kind = headers.get("content-type", "")
                     if kind == "application/json":
                         code = re.search(rb'"error_code"\s*:\s*(-?\d+)', data)
@@ -298,11 +288,7 @@ class SdCard:
             if not got_video:
                 raise NoRecording("その時刻の録画が SD カードに無い")
         finally:
-            writer.close()
-            try:
-                await asyncio.wait_for(writer.wait_closed(), 2.0)
-            except (OSError, asyncio.TimeoutError):
-                writer.transport.abort()
+            await connection.close()
 
     async def export(self, start: float, seconds: float, path: str | Path, *,
                      progress: Callable[[float], None] | None = None) -> float:

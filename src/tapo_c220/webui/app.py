@@ -17,11 +17,10 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, TalkError, TapoC220
-from ..api import TapoApiError
-from ..sdcard import SdCard
-from ..settings import DayNight, Detection
-from ..sdplayer import SdPlayer
+from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, StreamError, TapoC220
+from ..tapo.api import TapoApiError
+from ..tapo.sdplayer import SdPlayer
+from ..tapo.settings import DayNight, Detection
 from ..webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
@@ -112,7 +111,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     async def lifespan(app: FastAPI):
         app.state.camera = camera or TapoC220()
         app.state.webrtc = WebRtcSessions(app.state.camera.cfg)
-        app.state.sdcard = SdCard(app.state.camera.cfg)
+        app.state.sdcard = app.state.camera.sdcard
         yield
         for task in (export["task"], detected["task"]):
             if task is not None:
@@ -134,7 +133,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
 
     @app.exception_handler(OnvifError)
     @app.exception_handler(MediaError)
-    @app.exception_handler(TalkError)
+    @app.exception_handler(StreamError)
     @app.exception_handler(TapoApiError)
     async def device_error(request: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=502)
@@ -151,7 +150,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     async def info() -> dict:
         data = await cam().info()
         return {"device": data["device"], "profiles": [asdict(p) for p in data["profiles"]],
-                "position": asdict(data["position"]), "speaker": bool(cam().cfg.cloud_password)}
+                "position": asdict(data["position"]), "speaker": cam().tapo.available}
 
     # --- 映像と音声 ---------------------------------------------------------------------------------------------------
 
@@ -265,7 +264,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
                                               progress=lambda done: export.update(done=done))
             except asyncio.CancelledError:
                 export["error"] = "取り出しを止めた"
-            except (TalkError, MediaError) as e:
+            except (StreamError, MediaError) as e:
                 export["error"] = str(e)
             finally:
                 export["task"] = None

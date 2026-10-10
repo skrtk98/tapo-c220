@@ -11,7 +11,6 @@ from __future__ import annotations
 from enum import StrEnum
 
 from .api import TapoApi, TapoApiError
-from .config import TapoConfig
 
 _on = lambda value: value == "on"  # noqa: E731
 _switch = lambda enabled: "on" if enabled else "off"  # noqa: E731
@@ -54,8 +53,11 @@ _IMAGE = {"brightness": "luma", "contrast": "contrast", "saturation": "saturatio
 
 
 class CameraSettings:
-    def __init__(self, cfg: TapoConfig | None = None, api: TapoApi | None = None):
-        self.api = api or TapoApi(cfg or TapoConfig.load())
+    def __init__(self, api: TapoApi | None = None):
+        if api is None:
+            from . import TapoSession
+            api = TapoSession().api
+        self.api = api
 
     # --- 本体 --------------------------------------------------------------------------------------------------------
 

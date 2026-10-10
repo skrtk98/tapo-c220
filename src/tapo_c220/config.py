@@ -26,7 +26,7 @@ class TapoConfig:
     host: str
     user: str                  # カメラアカウント（Tapo アプリの「カメラのアカウント」）。RTSP と ONVIF に使う
     password: str
-    cloud_password: str = ""   # Tapo アカウント（クラウド）のパスワード。8800 番の双方向音声にだけ使う
+    cloud_password: str = ""   # Tapo アカウント（クラウド）のパスワード。Tapo 独自の経路（443 番・8800 番）に使う
     rtsp_port: int = 554
     onvif_port: int = 2020
     talk_port: int = 8800

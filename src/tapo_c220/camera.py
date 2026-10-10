@@ -12,7 +12,8 @@ from .config import TapoConfig
 from .events import Event, events
 from .media import Recording
 from .onvif import OnvifClient, Preset, PtzPosition
-from .talk import TalkError, play_alaw
+from .tapo import StreamError, TapoSession
+from .tapo.talk import TalkError, play_alaw
 
 class Direction(StrEnum):
     """画面が動く向き。値は "left" などの文字列で、`Direction("left")` のように文字列からも作れる。"""
@@ -42,7 +43,8 @@ class TapoC220:
         self.cfg = cfg or TapoConfig.load()
         self.onvif = OnvifClient(self.cfg.host, self.cfg.user, self.cfg.password, port=self.cfg.onvif_port)
         self._speaker = asyncio.Lock()
-        self._settings = None
+        self.tapo = TapoSession(self.cfg)  # Tapo 独自の経路（443 番の制御 API、8800 番のストリーム）
+        self._settings = self._sdcard = None
 
     async def aclose(self) -> None:
         await self.onvif.aclose()
@@ -84,7 +86,7 @@ class TapoC220:
         max_seconds を指定すると先頭のその長さだけを鳴らす。途中でやめるには、この呼び出しをキャンセルする。"""
         alaw = await media.to_alaw(source, max_seconds=max_seconds, audio_filter=audio_filter)
         async with self._speaker:
-            await play_alaw(self.cfg.host, self.cfg.cloud_password, alaw, port=self.cfg.talk_port)
+            await play_alaw(self.tapo.stream, alaw)
         return len(alaw) / 8000
 
     async def siren(self, seconds: float = 10.0) -> float:
@@ -92,7 +94,7 @@ class TapoC220:
         音の大きさは、カメラのスピーカーの音量（settings.set_speaker_volume）で決まる。途中でやめるにはキャンセルする。"""
         alaw = await media.siren_alaw(seconds)
         async with self._speaker:
-            await play_alaw(self.cfg.host, self.cfg.cloud_password, alaw, port=self.cfg.talk_port)
+            await play_alaw(self.tapo.stream, alaw)
         return len(alaw) / 8000
 
     # --- 設定と検知（Tapo 独自の API、ONVIF のイベント） ------------------------------------------------------------------
@@ -101,9 +103,17 @@ class TapoC220:
     def settings(self):
         """カメラの設定（settings.CameraSettings）。pytapo が要る（`tapo-c220-survey[tapo]`）。"""
         if self._settings is None:
-            from .settings import CameraSettings
-            self._settings = CameraSettings(self.cfg)
+            from .tapo.settings import CameraSettings
+            self._settings = CameraSettings(self.tapo.api)
         return self._settings
+
+    @property
+    def sdcard(self):
+        """microSD の録画（tapo.sdcard.SdCard）。pytapo と cryptography が要る（`tapo-c220-survey[tapo]`）。"""
+        if self._sdcard is None:
+            from .tapo.sdcard import SdCard
+            self._sdcard = SdCard(self.tapo)
+        return self._sdcard
 
     def events(self, *, changes_only: bool = True) -> AsyncIterator[Event]:
         """検知のイベントを、やめるまで受け取り続ける（events.events）。その検知をオンにしておくこと（settings.set_detection）。"""
@@ -145,4 +155,4 @@ class TapoC220:
         await self.onvif.remove_preset(token)
 
 
-__all__ = ["Direction", "TalkError", "TapoC220"]
+__all__ = ["Direction", "StreamError", "TalkError", "TapoC220"]

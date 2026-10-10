@@ -1,4 +1,4 @@
-"""Tapo 独自の API（443 番）への窓口。ログインと暗号化の手順が込み入っているので pytapo に任せる。
+"""Tapo 独自の制御 API（443 番）への窓口。ログインと暗号化の手順が込み入っているので pytapo に任せる。
 
 pytapo は同期の HTTP なので、1つずつ別スレッドで呼ぶ。認証は Tapo アカウント（クラウド）のパスワード（ユーザは admin）。
 """
@@ -11,7 +11,6 @@ from typing import Any
 
 from pytapo import Tapo
 
-from .config import TapoConfig
 
 
 class TapoApiError(RuntimeError):
@@ -19,17 +18,16 @@ class TapoApiError(RuntimeError):
 
 
 class TapoApi:
-    def __init__(self, cfg: TapoConfig):
-        self.cfg = cfg
+    def __init__(self, host: str, cloud_password: str):
+        self.host, self._password = host, cloud_password
         self._client: Tapo | None = None
         self._lock = asyncio.Lock()
 
     def _connect(self) -> Tapo:
-        if not self.cfg.cloud_password:
+        if not self._password:
             raise TapoApiError("TAPO_CLOUD_PASSWORD（Tapo アカウントのパスワード）が設定されていない")
         if self._client is None:
-            self._client = Tapo(self.cfg.host, "admin", self.cfg.cloud_password, self.cfg.cloud_password,
-                                printWarnInformation=False)
+            self._client = Tapo(self.host, "admin", self._password, self._password, printWarnInformation=False)
         return self._client
 
     async def call(self, work: Callable[[Tapo], Any]) -> Any:
