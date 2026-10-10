@@ -50,7 +50,7 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 
 | モジュール | 役割 |
 | --- | --- |
-| `tapo_c220.camera` | 窓口の `TapoC220`。向き（left / right / up / down）を画面の動きに合わせる |
+| `tapo_c220.facade` | 全体の窓口の `TapoC220`。向き（left / right / up / down）を画面の動きに合わせる |
 | `tapo_c220.onvif` | ONVIF の最小限のクライアント（SOAP を手で組む。依存は httpx だけ） |
 | `tapo_c220.media` | RTSP の受信と変換（ffmpeg）。静止画、ライブ配信、録音・録画 |
 | `tapo_c220.webrtc` | ライブ映像と音声を WebRTC でブラウザへ送る（aiortc） |

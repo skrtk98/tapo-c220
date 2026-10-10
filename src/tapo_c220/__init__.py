@@ -1,6 +1,6 @@
 """TP-Link Tapo C220 を RTSP・ONVIF（Profile S）・Tapo 独自の双方向音声で操作する。"""
 
-from .camera import Direction, TapoC220
+from .facade import Direction, TapoC220
 from .config import TapoConfig
 from .events import Event
 from .media import MAIN, SUB, MediaError, Recording
