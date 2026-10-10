@@ -7,6 +7,8 @@
 - 録画：`SdPackets(sdcard, start)`（または `SdCard.packets()`）。映像は H.264、音声は G.711（この個体は µ-law 16kHz）。
 
 どちらも `async for` で読み、やめるときは `aclose()` を呼ぶ（カメラとの接続を返す）。
+読む側が遅くても、溜めるのは 1000 パケットまで。ライブは待たせられないので、超えたら MediaError で終える。
+録画は、読む側が追いつくまでカメラから受け取るのを止めて待つ。
 
 C220 のライブは、RTP の時刻そのものは正しく進むが、約 0.5 秒ごとに届く RTCP の Sender Report の時刻（NTP）が
 交互に約 ±0.38 秒ずれている。libav はこれを信じて pts を合わせ直すので、pts が約 0.35 秒戻っては約 0.42 秒飛ぶ。
@@ -29,6 +31,7 @@ from .config import TapoConfig
 from .media import MediaError
 
 _OPEN_TIMEOUT = 10  # RTSP の接続と読み取りを諦めるまでの秒数
+_BACKLOG = 1000     # 読む側が受け取っていないパケットの数の上限（ライブの 640×360 で 20 秒ぶんほど）
 _AUDIO_NAMES = {"pcm_alaw": "alaw", "pcm_mulaw": "mulaw"}
 
 
@@ -79,6 +82,7 @@ class LivePackets:
         self._quit = threading.Event()
         self._queue: asyncio.Queue[Packet | None] = asyncio.Queue()
         self._started = False
+        self._overflow = False
 
     @classmethod
     async def open(cls, cfg: TapoConfig, stream: str = media.SUB) -> LivePackets:
@@ -102,6 +106,8 @@ class LivePackets:
         packet = await self._queue.get()
         if packet is None:
             self._queue.put_nowait(None)  # 次に呼ばれても終わりを返す
+            if self._overflow:
+                raise MediaError("ライブのパケットを読むのが遅すぎて、溜めきれなくなった")
             raise StopAsyncIteration
         return packet
 
@@ -123,6 +129,10 @@ class LivePackets:
                             break
                         if not raw.size or raw.pts is None:
                             continue
+                        if self._queue.qsize() > _BACKLOG:  # 読む側が受け取っていない。溜め続けない
+                            self._overflow = True
+                            self._quit.set()
+                            break
                         kind = raw.stream.type
                         if kind == "video":
                             packet = Packet(kind, bytes(raw), retime(float(raw.pts * raw.time_base)), self.kinds[kind],
@@ -217,6 +227,8 @@ class SdPackets:
         """カメラから TS を受け取り、音声を取り出して渡す。映像は、別スレッドの libav に切り出させる。"""
         try:
             async for chunk in self.sd.playback(self.start, exclusive=True):
+                while self._queue.qsize() > _BACKLOG:  # 読む側が追いつくまで、カメラから受け取るのを止める
+                    await asyncio.sleep(0.05)
                 self._ts.feed(chunk)
                 self._feed.chunks.put(chunk)
                 audio = self._ts.take_audio()

@@ -8,7 +8,7 @@ import time
 import httpx
 import pytest
 
-from tapo_c220 import Direction, OnvifClient, OnvifError, TapoC220, TapoConfig
+from tapo_c220 import Direction, MediaError, OnvifClient, OnvifError, TapoC220, TapoConfig
 from tapo_c220.onvif import redact
 from tapo_c220 import talk
 from tapo_c220.tapo.stream import Connection, digest_password
@@ -336,3 +336,32 @@ def test_retimer_smooths_sender_report_jumps():
     # 40ms ごとに進むはずの映像の時刻が、0.35 秒戻っては 0.42 秒飛ぶ（C220 の RTCP のずれ）
     out = [retime(pts) for pts in (5.00, 5.04, 5.08, 4.73, 4.77, 5.19, 5.23)]
     assert out == pytest.approx([0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24])
+
+
+async def test_live_packets_stop_when_reader_is_too_slow(monkeypatch):
+    from types import SimpleNamespace
+
+    from tapo_c220 import packets
+
+    monkeypatch.setattr(packets, "_BACKLOG", 5)
+    video = SimpleNamespace(type="video", codec_context=SimpleNamespace(name="h264"))
+
+    class Raw:
+        size, time_base, is_keyframe, stream = 3, 1, False, video
+
+        def __init__(self, pts):
+            self.pts = pts
+
+        def __bytes__(self):
+            return b"abc"
+
+    closed = []
+    container = SimpleNamespace(streams=SimpleNamespace(video=[video], audio=[]), close=lambda: closed.append(True),
+                                demux=lambda *streams: (Raw(i / 30) for i in range(100)))
+    live = packets.LivePackets(container)
+    assert (await anext(live)).data == b"abc"   # 読み始めると、カメラは 100 個を一気に送ってくる
+    await asyncio.sleep(0.1)
+    with pytest.raises(MediaError, match="遅すぎ"):
+        async for _ in live:
+            pass
+    assert closed and live._queue.qsize() < 10
