@@ -101,7 +101,7 @@ class TapoC220:
 
     @property
     def settings(self):
-        """カメラの設定（settings.CameraSettings）。pytapo が要る（`tapo-c220-survey[tapo]`）。"""
+        """カメラの設定（settings.CameraSettings）。pytapo が要る（`tapo-c220[tapo]`）。"""
         if self._settings is None:
             from .settings import CameraSettings
             self._settings = CameraSettings(self.tapo.api)
@@ -109,7 +109,7 @@ class TapoC220:
 
     @property
     def sdcard(self):
-        """microSD の録画（sdcard.SdCard）。pytapo と cryptography が要る（`tapo-c220-survey[tapo]`）。"""
+        """microSD の録画（sdcard.SdCard）。pytapo と cryptography が要る（`tapo-c220[tapo]`）。"""
         if self._sdcard is None:
             from .sdcard import SdCard
             self._sdcard = SdCard(self.tapo)

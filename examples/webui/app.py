@@ -1,4 +1,8 @@
-"""TapoC220 を HTTP から呼ぶだけの薄い WebUI。認証は無いので、信頼できるネットワークの中だけで使うこと。"""
+"""tapo_c220 ライブラリの使用例：TapoC220 を HTTP から呼ぶだけの薄い WebUI。
+
+認証は無いので、信頼できるネットワークの中だけで使うこと。リポジトリの直下で
+`uv run --package tapo-c220-webui examples/webui/app.py` として起こす（`.env` と `recordings/` は、起こした場所のものを使う）。
+"""
 
 from __future__ import annotations
 
@@ -17,11 +21,11 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, StreamError, TapoC220
-from ..sdplayer import SdPlayer
-from ..settings import DayNight, Detection
-from ..tapo.api import TapoApiError
-from ..webrtc import WebRtcSessions
+from tapo_c220 import MAIN, SUB, Direction, MediaError, OnvifError, Recording, StreamError, TapoC220
+from tapo_c220.sdplayer import SdPlayer
+from tapo_c220.settings import DayNight, Detection
+from tapo_c220.tapo.api import TapoApiError
+from tapo_c220.webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
 _NAME = re.compile(r"^(sd-)?[0-9]{8}-[0-9]{6}(-[0-9]{3})?\.(wav|mp4)$")

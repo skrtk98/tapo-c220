@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "tapo-c220",
+    "tapo-c220-webui",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -1122,7 +1128,7 @@ wheels = [
 ]
 
 [[package]]
-name = "tapo-c220-survey"
+name = "tapo-c220"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -1130,49 +1136,54 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-sdcard = [
-    { name = "cryptography" },
-    { name = "pytapo" },
-]
 tapo = [
     { name = "cryptography" },
     { name = "pytapo" },
 ]
-webui = [
+webrtc = [
     { name = "aiortc" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "pytapo" },
-    { name = "python-multipart" },
-    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "tapo-c220-survey", extra = ["webui"] },
+    { name = "tapo-c220", extra = ["tapo", "webrtc"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "aiortc", marker = "extra == 'webui'", specifier = ">=1.9" },
+    { name = "aiortc", marker = "extra == 'webrtc'", specifier = ">=1.9" },
     { name = "cryptography", marker = "extra == 'tapo'", specifier = ">=50.0.2" },
-    { name = "fastapi", marker = "extra == 'webui'", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pytapo", marker = "extra == 'tapo'", specifier = ">=3.4.26" },
-    { name = "python-multipart", marker = "extra == 'webui'", specifier = ">=0.0.20" },
-    { name = "tapo-c220-survey", extras = ["tapo"], marker = "extra == 'sdcard'" },
-    { name = "tapo-c220-survey", extras = ["tapo"], marker = "extra == 'webui'" },
-    { name = "uvicorn", marker = "extra == 'webui'", specifier = ">=0.34" },
 ]
-provides-extras = ["webui", "sdcard", "tapo"]
+provides-extras = ["tapo", "webrtc"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=1.0" },
-    { name = "tapo-c220-survey", extras = ["webui"] },
+    { name = "tapo-c220", extras = ["tapo", "webrtc"] },
+]
+
+[[package]]
+name = "tapo-c220-webui"
+version = "0.1.0"
+source = { virtual = "examples/webui" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "python-multipart" },
+    { name = "tapo-c220", extra = ["tapo", "webrtc"] },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "tapo-c220", extras = ["tapo", "webrtc"], editable = "." },
+    { name = "uvicorn", specifier = ">=0.34" },
 ]
 
 [[package]]

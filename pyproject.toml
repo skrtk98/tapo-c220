@@ -1,7 +1,7 @@
 [project]
-name = "tapo-c220-survey"
+name = "tapo-c220"
 version = "0.1.0"
-description = "TP-Link Tapo C220 を RTSP / ONVIF (Profile S) / 独自の双方向音声で操作するライブラリと、その薄い WebUI"
+description = "TP-Link Tapo C220 を RTSP / ONVIF (Profile S) / Tapo 独自の経路で操作するライブラリ"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -9,36 +9,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-webui = [
-    "aiortc>=1.9",
-    "fastapi>=0.115",
-    "python-multipart>=0.0.20",
-    "tapo-c220-survey[tapo]",
-    "uvicorn>=0.34",
-]
-sdcard = ["tapo-c220-survey[tapo]"]  # 以前の名前（互換のために残す）
 tapo = [  # Tapo 独自の API と録画（設定の読み書き、microSD の録画）
     "cryptography>=50.0.2",
     "pytapo>=3.4.26",
 ]
+webrtc = [  # ライブ映像・録画をブラウザへ送る（webrtc、sdplayer）
+    "aiortc>=1.9",
+]
 
 [project.scripts]
 tapo-c220 = "tapo_c220.cli:main"
-tapo-c220-web = "tapo_c220.webui.app:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=1.0",
-    "tapo-c220-survey[webui]",
+    "tapo-c220[tapo,webrtc]",
 ]
 
 [build-system]
-requires = ["uv_build>=0.11,<0.12"]
+requires = ["uv_build>=0.11.17,<0.12.0"]
 build-backend = "uv_build"
 
-[tool.uv.build-backend]
-module-name = "tapo_c220"
+[tool.uv.workspace]
+members = ["examples/*"]  # 使用例（ライブラリには含めない）
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

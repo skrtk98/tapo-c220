@@ -1,6 +1,7 @@
 # tapo-c220-survey
 
-TP-Link Tapo C220 を RTSP と ONVIF（Profile S）で操作できる範囲を実機で調べ、その結果をライブラリ `tapo_c220` と薄い WebUI にまとめたもの。
+TP-Link Tapo C220 を RTSP と ONVIF（Profile S）で操作できる範囲を実機で調べ、その結果をライブラリ `tapo_c220`（配布名は `tapo-c220`）にまとめたもの。
+ライブラリの使用例として、ブラウザから一通り操作する薄い WebUI（`examples/webui/`）を添えている。
 
 調べた個体は Tapo C220（ハードウェア 2.0、ファームウェア 1.3.1 Build 260515）。
 
@@ -17,12 +18,25 @@ TAPO_CLOUD_PASSWORD=...  # Tapo アカウント（クラウド）のパスワー
 
 ```sh
 uv sync
-uv run tapo-c220-web            # http://127.0.0.1:8220 （--host / --port で変更）
 uv run tapo-c220 info           # コマンドラインから（下の表）
 uv run pytest                   # カメラ無しで動くテスト
+uv run --package tapo-c220-webui examples/webui/app.py   # 使用例の WebUI。http://127.0.0.1:8220 （--host / --port で変更）
 ```
 
-WebUI には認証が無い。既定では手元（127.0.0.1）でしか待ち受けない。録音・録画は `recordings/`（`TAPO_RECORD_DIR`）に保存する。
+構成は `uv init --lib` の形（`src/tapo_c220/`、`py.typed`、ビルドは `uv_build`）。WebUI はライブラリに含めず、
+同じワークスペースの別のプロジェクト（`examples/webui/`。FastAPI などの依存はそちらが持つ）にしてある。
+
+```
+pyproject.toml            # ライブラリ tapo-c220
+src/tapo_c220/            # ライブラリ本体（下の表）
+tests/
+examples/webui/           # 使用例：pyproject.toml、app.py、static/index.html
+```
+
+ライブラリの追加の依存：`tapo-c220[tapo]`（設定、microSD の録画。pytapo と cryptography）、
+`tapo-c220[webrtc]`（ブラウザへの配信。aiortc）。無しでも RTSP・ONVIF・スピーカーは使える。
+
+WebUI には認証が無い。既定では手元（127.0.0.1）でしか待ち受けない。録音・録画は、起こした場所の `recordings/`（`TAPO_RECORD_DIR`）に保存する。
 
 コマンドライン（`tapo-c220 <コマンド> --help` で引数が出る。結果は JSON で出す）：
 
@@ -57,7 +71,7 @@ async with TapoC220() as cam:                 # .env を読む
         ...
 ```
 
-ブラウザへのライブ配信は `tapo_c220.webrtc.WebRtcSessions`（aiortc が要る。`[webui]` に含まれる）：
+ブラウザへのライブ配信は `tapo_c220.webrtc.WebRtcSessions`（aiortc が要る。`tapo-c220[webrtc]`）：
 
 ```python
 sessions = WebRtcSessions(cam.cfg)
@@ -78,7 +92,6 @@ answer = await sessions.answer(offer_sdp, stream="stream2")   # ブラウザの 
 | `tapo_c220.talk` | スピーカーへの音声。`tapo.stream` を使う |
 | `tapo_c220.sdcard` | microSD の録画。一覧は `tapo.api`、取り出しは `tapo.stream` を使う |
 | `tapo_c220.sdplayer` | microSD の録画を、指定した時刻から WebRTC で流し続ける |
-| `tapo_c220.webui` | FastAPI の WebUI（`TapoC220` を HTTP から呼ぶだけ） |
 
 ## 調査結果
 
@@ -271,7 +284,9 @@ async for event in cam.events():                    # やめるまで続く。Ev
   以前は、ファイルへ録音・録画している ffmpeg が残り、カメラの RTSP の同時接続（3本）を埋めたままになった。
   Linux 以外や、`setpriv`（util-linux）が無い環境では、この仕組みは無い。
 
-## WebUI
+## WebUI（使用例、`examples/webui/`）
+
+ライブラリの外に置いたサンプルで、`TapoC220` などを HTTP から呼ぶだけの FastAPI のアプリ。
 
 - ライブ映像：既定は WebRTC（640×360 / 2560×1440、音あり）。カメラの H.264 と G.711 A-law は WebRTC の標準のコーデックなので、
   変換せずそのまま RTP に載せ替えている。合図は `POST /api/webrtc/offer` の1往復だけで、STUN/TURN は使わない（同じ LAN の中で使う前提）。

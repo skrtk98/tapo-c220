@@ -1,0 +1,14 @@
+[project]
+name = "tapo-c220-webui"
+version = "0.1.0"
+description = "tapo-c220 ライブラリの使用例：ブラウザから一通り操作する薄い WebUI"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "python-multipart>=0.0.20",
+    "tapo-c220[tapo,webrtc]",
+    "uvicorn>=0.34",
+]
+
+[tool.uv.sources]
+tapo-c220 = { workspace = true }

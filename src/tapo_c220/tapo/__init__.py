@@ -27,7 +27,7 @@ class TapoSession:
 
     @property
     def api(self):
-        """443 番の制御 API（api.TapoApi）。pytapo が要る（`tapo-c220-survey[tapo]`）。"""
+        """443 番の制御 API（api.TapoApi）。pytapo が要る（`tapo-c220[tapo]`）。"""
         if self._api is None:
             from .api import TapoApi
             self._api = TapoApi(self.cfg.host, self.cfg.cloud_password)

@@ -1,4 +1,4 @@
-"""カメラ本体の microSD カードの録画（pytapo と cryptography が要る。`tapo-c220-survey[tapo]`）。
+"""カメラ本体の microSD カードの録画（pytapo と cryptography が要る。`tapo-c220[tapo]`）。
 
 ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP でも再生できない。どちらも Tapo 独自の経路を使う。
 認証はどちらも Tapo アカウント（クラウド）のパスワード。
