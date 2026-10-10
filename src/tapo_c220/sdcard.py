@@ -3,8 +3,8 @@
 ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP でも再生できない。どちらも Tapo 独自の経路を使う。
 認証はどちらも Tapo アカウント（クラウド）のパスワード。
 
-- 一覧（録画のある日、1日の中の区間、カードの状態）：443 番の制御 API（api.TapoApi）。
-- 取り出し：8800 番のストリーム（stream.TapoStream）につなぎ、playback の要求を送る。
+- 一覧（録画のある日、1日の中の区間、カードの状態）：443 番の制御 API（tapo.api.TapoApi）。
+- 取り出し：8800 番のストリーム（tapo.stream.TapoStream）につなぎ、playback の要求を送る。
   録画は AES-CBC で暗号化された MPEG-TS（映像は H.264、音声は G.711。この個体は µ-law 16kHz でストリーム種別 0x91）として届く。
   ファイルの転送ではなく「再生」なので、録画の長さと同じ時間がかかる。
   scale で 2 倍以上を指定するとデータは速く届くが、音声が来なくなり、映像の時刻の進み方も等速のときと変わる
@@ -23,11 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from ..media import MediaError
-from . import TapoSession
-from .api import TapoApiError
-from .stream import StreamError
+from .media import MediaError
 from .talk import crc32_mpeg
+from .tapo import TapoSession
+from .tapo.api import TapoApiError
+from .tapo.stream import StreamError
 
 _MAX_PART = 4 * 1024 * 1024    # 1つの部分の大きさの上限
 # 音声のストリーム種別 → (ffmpeg の形式名, サンプリング周波数)。ファームウェアによって A-law 8kHz か µ-law 16kHz

@@ -1,7 +1,7 @@
 """Tapo 独自の双方向音声（カメラのスピーカーから鳴らす）。
 
 RTSP/ONVIF の標準にはカメラへ音声を送る経路が無い（SDP に送信用のトラックが無く、GetAudioOutputs も空）。
-Tapo 独自のストリーム（8800 番。接続と認証は stream.TapoStream）を使う：
+Tapo 独自のストリーム（8800 番。接続と認証は tapo.stream.TapoStream）を使う：
 
 1. {"params":{"talk":{"mode":"aec"},"method":"get"},...} を送り、session_id を受け取る。
 2. A-law の音声を MPEG-TS（PES のストリーム種別 0x90）に包み、20ms ずつ実時間の速さで multipart として送る。
@@ -13,7 +13,7 @@ import asyncio
 import json
 import time
 
-from .stream import Connection, StreamError, TapoStream
+from .tapo.stream import Connection, StreamError, TapoStream
 
 _RATE = 8000           # カメラへ送る A-law のサンプリング周波数
 _CHUNK = 160           # 20ms ぶんのバイト数

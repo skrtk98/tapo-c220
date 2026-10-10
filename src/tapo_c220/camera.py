@@ -13,7 +13,7 @@ from .events import Event, events
 from .media import Recording
 from .onvif import OnvifClient, Preset, PtzPosition
 from .tapo import StreamError, TapoSession
-from .tapo.talk import TalkError, play_alaw
+from .talk import TalkError, play_alaw
 
 class Direction(StrEnum):
     """画面が動く向き。値は "left" などの文字列で、`Direction("left")` のように文字列からも作れる。"""
@@ -103,15 +103,15 @@ class TapoC220:
     def settings(self):
         """カメラの設定（settings.CameraSettings）。pytapo が要る（`tapo-c220-survey[tapo]`）。"""
         if self._settings is None:
-            from .tapo.settings import CameraSettings
+            from .settings import CameraSettings
             self._settings = CameraSettings(self.tapo.api)
         return self._settings
 
     @property
     def sdcard(self):
-        """microSD の録画（tapo.sdcard.SdCard）。pytapo と cryptography が要る（`tapo-c220-survey[tapo]`）。"""
+        """microSD の録画（sdcard.SdCard）。pytapo と cryptography が要る（`tapo-c220-survey[tapo]`）。"""
         if self._sdcard is None:
-            from .tapo.sdcard import SdCard
+            from .sdcard import SdCard
             self._sdcard = SdCard(self.tapo)
         return self._sdcard
 

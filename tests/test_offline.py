@@ -6,7 +6,7 @@ import pytest
 from tapo_c220 import Direction, OnvifClient, OnvifError, TapoC220, TapoConfig
 from tapo_c220.onvif import redact
 from tapo_c220.tapo.stream import digest_password
-from tapo_c220.tapo.talk import Muxer, _reply_params, crc32_mpeg, header_packets
+from tapo_c220.talk import Muxer, _reply_params, crc32_mpeg, header_packets
 
 CFG = TapoConfig(host="192.0.2.1", user="user", password="p@ss/word", cloud_password="cloud")
 
@@ -148,7 +148,7 @@ def test_sdcard_ts_reader_and_decryptor():
 
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    from tapo_c220.tapo.sdcard import SdCardError, TsReader, decryptor
+    from tapo_c220.sdcard import SdCardError, TsReader, decryptor
 
     mux = Muxer()
     sound = bytes(range(160)) * 5
@@ -168,7 +168,7 @@ def test_sdcard_ts_reader_and_decryptor():
 
 def test_sdplayer_audio_frames():
     """録画の G.711 を PCM に戻し、20ms ずつのフレームにして音声のトラックへ渡す。"""
-    from tapo_c220.tapo.sdplayer import SdPlayer, _g711_table
+    from tapo_c220.sdplayer import SdPlayer, _g711_table
 
     assert _g711_table("mulaw")[0xFF] == 0 and _g711_table("mulaw")[0x00] == -32124 and _g711_table("mulaw")[0x80] == 32124
     assert _g711_table("alaw")[0xD5] == 8 and _g711_table("alaw")[0x55] == -8
@@ -204,7 +204,7 @@ def test_event_notification():
 
 async def test_settings_requests():
     """設定の書き込みは、与えた項目だけを、カメラの API の名前に直して送る。"""
-    from tapo_c220.tapo.settings import CameraSettings, DayNight, Detection
+    from tapo_c220.settings import CameraSettings, DayNight, Detection
 
     sent = []
 

@@ -18,9 +18,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from .. import MAIN, SUB, Direction, MediaError, OnvifError, Recording, StreamError, TapoC220
+from ..sdplayer import SdPlayer
+from ..settings import DayNight, Detection
 from ..tapo.api import TapoApiError
-from ..tapo.sdplayer import SdPlayer
-from ..tapo.settings import DayNight, Detection
 from ..webrtc import WebRtcSessions
 
 _STATIC = Path(__file__).parent / "static"
