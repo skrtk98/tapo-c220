@@ -2,7 +2,7 @@
 name = "tapo-c220-webui"
 version = "0.1.0"
 description = "tapo-c220 ライブラリの使用例：ブラウザから一通り操作する薄い WebUI"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "aiortc>=1.9",
     "fastapi>=0.115",

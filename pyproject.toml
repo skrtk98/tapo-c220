@@ -3,7 +3,7 @@ name = "tapo-c220"
 version = "0.1.0"
 description = "TP-Link Tapo C220 を RTSP / ONVIF (Profile S) / Tapo 独自の経路で操作するライブラリ"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28",
 ]
