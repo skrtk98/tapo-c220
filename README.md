@@ -263,9 +263,9 @@ async for event in cam.events():                    # やめるまで続く。Ev
 
 ## 止まり方について
 
-- ffmpeg は、起こしたプロセス（WebUI のサーバなど）が強制終了されても一緒に止まる（Linux の `PR_SET_PDEATHSIG`）。
+- ffmpeg は、起こしたプロセス（WebUI のサーバなど）が強制終了されても一緒に止まる（Linux の `setpriv --pdeathsig` を通して起こす）。
   以前は、ファイルへ録音・録画している ffmpeg が残り、カメラの RTSP の同時接続（3本）を埋めたままになった。
-  Linux 以外では、この仕組みは無い。
+  Linux 以外や、`setpriv`（util-linux）が無い環境では、この仕組みは無い。
 
 ## WebUI
 

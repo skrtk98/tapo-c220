@@ -150,9 +150,11 @@ async def _sd(cam: TapoC220, args: argparse.Namespace) -> None:
             _print([{**asdict(s), "start_local": _local(s.start), "end_local": _local(s.end)}
                     for s in await sd.segments(args.date)])
         case "detections":
-            start = time.mktime(time.strptime(args.date, "%Y%m%d"))
+            day = time.strptime(args.date, "%Y%m%d")
+            start = time.mktime(day)
+            end = time.mktime((day.tm_year, day.tm_mon, day.tm_mday + 1, 0, 0, 0, 0, 0, -1))  # 次の日の 0 時（夏時間の日も）
             _print([{**d, "start_local": _local(d["start"]), "end_local": _local(d["end"])}
-                    for d in await sd.detections(start, start + 86400)])
+                    for d in await sd.detections(start, end)])
         case "export":
             shown = [-10.0]
 

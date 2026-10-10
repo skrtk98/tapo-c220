@@ -15,9 +15,7 @@ C220 で実測したこと（ファームウェア 1.3.1）：
 from __future__ import annotations
 
 import asyncio
-import ctypes
-import os
-import signal
+import shutil
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -37,24 +35,18 @@ class MediaError(RuntimeError):
     pass
 
 
-_PR_SET_PDEATHSIG = 1
-_libc = ctypes.CDLL(None, use_errno=True) if sys.platform == "linux" else None  # fork の後では読み込まない
+# 親が死んだら子も止める仕組み（Linux の util-linux にある）。fork のあとに Python の処理を挟まないので、スレッドがあっても安全
+_SETPRIV = shutil.which("setpriv") if sys.platform == "linux" else None
 
 
 async def spawn(*argv: str, **options) -> asyncio.subprocess.Process:
     """ffmpeg を起こす。Linux では、このプロセスが死んだら（強制終了でも）ffmpeg も止まるようにしておく。
     そうしないと、ファイルへ書いている ffmpeg が残り、カメラの RTSP の同時接続（3本）を埋めたままになる。
-    止まるのは「起こしたスレッド」が終わったとき。イベントループを動かしているスレッドから呼ぶこと。"""
-    if _libc is None:
-        return await asyncio.create_subprocess_exec(*argv, **options)
-    parent = os.getpid()
-
-    def die_with_parent() -> None:
-        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
-        if os.getppid() != parent:  # 設定する前に親が死んでいた
-            os._exit(1)
-
-    return await asyncio.create_subprocess_exec(*argv, preexec_fn=die_with_parent, **options)
+    止まるのは「起こしたスレッド」が終わったとき。イベントループを動かしているスレッドから呼ぶこと。
+    setpriv が無い環境では、この仕組みなしで起こす。"""
+    if _SETPRIV:
+        argv = (_SETPRIV, "--pdeathsig", "KILL", *argv)
+    return await asyncio.create_subprocess_exec(*argv, **options)
 
 
 def rtsp_url(cfg: TapoConfig, stream: str = MAIN) -> str:
