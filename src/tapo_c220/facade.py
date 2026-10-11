@@ -121,9 +121,11 @@ class TapoC220:
             self._sdcard = SdCard(self.tapo)
         return self._sdcard
 
-    def events(self, *, changes_only: bool = True) -> AsyncIterator[Event]:
-        """検知のイベントを、やめるまで受け取り続ける（events.events）。その検知をオンにしておくこと（settings.set_detection）。"""
-        return events(self.onvif, changes_only=changes_only)
+    def events(self, *, changes_only: bool = True, port: int = 0, bind: str | None = None,
+               advertise: str | None = None) -> AsyncIterator[Event]:
+        """検知のイベントを、やめるまで受け取り続ける（events.events）。その検知をオンにしておくこと（settings.set_detection）。
+        port・bind・advertise は、コンテナの中などで待ち受けるアドレスとカメラから見えるアドレスが違うときに使う（events.events を見る）。"""
+        return events(self.onvif, changes_only=changes_only, port=port, bind=bind, advertise=advertise)
 
     # --- 首振り（ONVIF PTZ） ------------------------------------------------------------------------------------------
 

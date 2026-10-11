@@ -273,6 +273,9 @@ async for event in cam.events():                    # やめるまで続く。Ev
 - WS-BaseNotification の Subscribe で、こちらが開けた HTTP の口の URL を渡すと、カメラがそこへ Notify を POST してくる。
   `events()` は LAN 側のアドレスの空いたポートで待ち受け、カメラの IP アドレス以外からの接続は受けない。
   カメラからこちらへ着信できること（ファイアウォール）が要る。
+  コンテナの中などでは `events(port=8802, bind="0.0.0.0", advertise="http://<ホストの LAN の IP>:8802/onvif-notify")` のように、
+  待ち受けるアドレスとカメラに伝える宛先を分けて渡す。Docker の port 公開（iptables の DNAT）なら送信元はカメラの IP のまま届くが、
+  docker-proxy が中継する構成では送信元が変わり、弾かれる。
 - 届くのは動体（Motion）・人物（People）・いたずら（Tamper）・ライン横断（LineCross）・TPSmartEvent。
   検知している間は真を約1秒ごとに送り、収まると偽を1回送る。`events()` は変わり目だけを返す。
 - 通知に付いている時刻（UtcTime）は当てにならない（人物の検知で、最初の時刻のまま変わらなかった）。届いた時刻を使っている。

@@ -69,12 +69,20 @@ def _addresses(host: str) -> tuple[str, str]:
         return sock.getpeername()[0], sock.getsockname()[0]
 
 
-async def events(onvif: OnvifClient, *, changes_only: bool = True, port: int = 0) -> AsyncIterator[Event]:
+async def events(onvif: OnvifClient, *, changes_only: bool = True, port: int = 0, bind: str | None = None,
+                 advertise: str | None = None) -> AsyncIterator[Event]:
     """検知のイベントを、やめるまで受け取り続ける。購読は自動で延ばし、やめるときに解約する。
 
     カメラからの通知を受けるために、こちらの LAN 側のアドレスで HTTP の口を開ける（port が 0 なら空いている番号）。
-    カメラの IP アドレス以外からの接続は受けない。ファイアウォールでカメラからの着信を塞いでいると、何も届かない。
+    カメラの IP アドレス以外からの接続は受けない（送信元の IP で判定する）。ファイアウォールでカメラからの着信を塞いでいると、何も届かない。
     changes_only が真なら、検知が始まったときと終わったときだけを返す（偽なら、カメラが送る約1秒ごとの通知をすべて返す）。
+
+    bind と advertise は、こちらがコンテナの中などにいて、待ち受けるアドレスとカメラから見えるアドレスが違うときに使う
+    （既定は、カメラへの経路から決めた LAN 側のアドレスで待ち受け、そのアドレスをカメラに伝える）。
+    bind は待ち受けるアドレス（コンテナなら "0.0.0.0"）。advertise はカメラに通知の宛先として伝える URL
+    （`http://<ホストの LAN の IP>:<公開した port>/onvif-notify`）。
+    Docker の port 公開（iptables の DNAT）なら、通知の送信元はカメラの IP のまま届くので、上の判定がそのまま使える。
+    port の公開をユーザ空間のプロキシ（docker-proxy）が中継する構成では、送信元が変わって弾かれる。
     """
     host = await asyncio.to_thread(_addresses, urlsplit(onvif.url).hostname)
     camera, local = host
@@ -100,8 +108,8 @@ async def events(onvif: OnvifClient, *, changes_only: bool = True, port: int = 0
         finally:
             writer.close()
 
-    server = await asyncio.start_server(receive, local, port)
-    consumer = f"http://{local}:{server.sockets[0].getsockname()[1]}/onvif-notify"
+    server = await asyncio.start_server(receive, local if bind is None else bind, port)
+    consumer = advertise or f"http://{local}:{server.sockets[0].getsockname()[1]}/onvif-notify"
     states: dict[str, bool] = {}
     try:
         while True:

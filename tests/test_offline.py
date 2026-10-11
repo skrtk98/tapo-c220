@@ -163,6 +163,24 @@ def test_event_notification():
     assert [(e.kind, e.active) for e in parse_messages(root)] == [("person", False), ("motion", True), ("motion", True)]
 
 
+async def test_events_bind_and_advertise():
+    """コンテナの中などでは、待ち受けるアドレスと、カメラに伝える宛先を別に指定できる。"""
+    from tapo_c220.events import events
+
+    sent = []
+
+    class Onvif:
+        url = "http://127.0.0.1:2020/onvif/service"
+
+        async def call(self, body, url=None):
+            sent.append(body)
+            raise OnvifError("止める")
+
+    with pytest.raises(OnvifError):
+        await anext(events(Onvif(), bind="127.0.0.1", advertise="http://192.0.2.1:8802/onvif-notify"))
+    assert "<wsa:Address>http://192.0.2.1:8802/onvif-notify</wsa:Address>" in sent[0]
+
+
 async def test_settings_requests():
     """設定の書き込みは、与えた項目だけを、カメラの API の名前に直して送る。"""
     from tapo_c220.settings import CameraSettings, DayNight, Detection
