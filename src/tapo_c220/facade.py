@@ -181,7 +181,8 @@ class TapoC220:
         await self.onvif.stop()
 
     async def goto(self, pan: float, tilt: float) -> None:
-        """位置（それぞれ -1〜1）を指定して動かす。pan は正の値で左、tilt は正の値で上。"""
+        """生の位置（それぞれ -1〜1）を指定して動かす。pan は正の値で左、tilt は正の値で上（カメラから見た向き）。
+        逆さに付けたとき（inverted）は部屋から見た向きと逆になる。部屋から見た位置との変換は room_position を使う。"""
         await self.onvif.absolute_move(pan, tilt)
 
     async def presets(self) -> list[Preset]:
