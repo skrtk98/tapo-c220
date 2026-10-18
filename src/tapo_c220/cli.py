@@ -169,8 +169,13 @@ async def _sd(cam: TapoC220, args: argparse.Namespace) -> None:
             _print({"path": args.path, "seconds": round(got, 1)})
 
 
+_INVERTED = {"auto": None, "on": True, "off": False}
+
+
 async def _run(args: argparse.Namespace) -> None:
-    async with TapoC220() as cam:
+    async with TapoC220(inverted=_INVERTED[getattr(args, "inverted", "auto")]) as cam:
+        if args.command in ("move", "step"):
+            await cam.detect_inverted()   # auto のときだけカメラの設定を読む
         match args.command:
             case "info":
                 info = await cam.info()
@@ -250,9 +255,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("direction", choices=list(Direction))
     p.add_argument("--seconds", type=float, default=1.0)
     p.add_argument("--speed", type=float, default=0.5)
+    p.add_argument("--inverted", choices=list(_INVERTED), default="auto", help="逆さに付けているか（auto はカメラの上下反転の設定から決める）")
     p = sub.add_parser("step", help="その向きへ、決めた量だけ動かす")
     p.add_argument("direction", choices=list(Direction))
     p.add_argument("--amount", type=float, default=0.05)
+    p.add_argument("--inverted", choices=list(_INVERTED), default="auto", help="逆さに付けているか（auto はカメラの上下反転の設定から決める）")
     p = sub.add_parser("goto", help="位置（それぞれ -1〜1）を指定して動かす")
     p.add_argument("pan", type=float)
     p.add_argument("tilt", type=float)

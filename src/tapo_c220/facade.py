@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from pathlib import Path
@@ -37,10 +38,21 @@ class Direction(StrEnum):
 
 _VELOCITY = {Direction.LEFT: (-1, 0), Direction.RIGHT: (1, 0), Direction.UP: (0, 1), Direction.DOWN: (0, -1)}
 
+_OPPOSITE = {Direction.LEFT: Direction.RIGHT, Direction.RIGHT: Direction.LEFT, Direction.UP: Direction.DOWN, Direction.DOWN: Direction.UP}
+
+log = logging.getLogger(__name__)
+
 
 class TapoC220:
-    def __init__(self, cfg: TapoConfig | None = None):
+    inverted: bool | None
+    """天井に逆さに付けているか（カメラの設定「上下反転」がオンの付け方）。None は未確定（正立として扱う）。
+    逆さのとき、ONVIF の首振りは上下左右とも逆に動く（実機：flip オンで step up は部屋の下、step left は部屋の右を向いた）。
+    True のとき move・step は向きを入れ替え、room_position は位置の符号を逆にする。代入かコンストラクタ引数で明示でき、
+    その場合 detect_inverted は設定を読まない。"""
+
+    def __init__(self, cfg: TapoConfig | None = None, *, inverted: bool | None = None):
         self.cfg = cfg or TapoConfig.load()
+        self.inverted = inverted
         self.onvif = OnvifClient(self.cfg.host, self.cfg.user, self.cfg.password, port=self.cfg.onvif_port)
         self._speaker = asyncio.Lock()
         self.tapo = TapoSession(self.cfg)  # Tapo 独自の経路（443 番の制御 API、8800 番のストリーム）
@@ -132,15 +144,37 @@ class TapoC220:
     async def position(self) -> PtzPosition:
         return await self.onvif.ptz_status()
 
+    async def detect_inverted(self) -> bool:
+        """カメラの上下反転の設定（settings.flip）から inverted を決めて返す。すでに明示（True / False）なら読まずにそれを返す。
+        設定を読めなかったときは False とし（inverted は None のまま、次に呼べば引き直す）、警告をログに出す。"""
+        if self.inverted is not None:
+            return self.inverted
+        try:
+            self.inverted = bool(await self.settings.flip())
+        except Exception as e:  # noqa: BLE001 - 設定が読めなくても首振りは使えるようにする
+            log.warning("上下反転の設定を読めなかったので、正立として扱う: %s", e)
+            return False
+        return self.inverted
+
+    def room_position(self, pos: PtzPosition) -> PtzPosition:
+        """生の位置（position()・プリセットの位置）を、部屋から見た向きに直す。pan 正で左、tilt 正で上（部屋から見て）。
+        逆さ（inverted）なら pan・tilt の符号を逆にする。goto・AbsoluteMove・position() は生の値のまま（互換のため）。"""
+        return PtzPosition(-pos.pan, -pos.tilt) if self.inverted else pos
+
+    def _view(self, direction: Direction | str) -> Direction:
+        """部屋から見た向きを、カメラへ指示する向きにする（逆さなら上下左右を入れ替える）。"""
+        d = Direction(direction)
+        return _OPPOSITE[d] if self.inverted else d
+
     async def move(self, direction: Direction | str, speed: float = 0.5, timeout: float | None = None) -> None:
-        """その向きへ動かし続ける。stop() を呼ぶか、timeout（秒）で止まる。speed は 0〜1。"""
-        pan, tilt = Direction(direction).velocity
+        """その向き（部屋から見て）へ動かし続ける。stop() を呼ぶか、timeout（秒）で止まる。speed は 0〜1。inverted なら向きを入れ替える。"""
+        pan, tilt = self._view(direction).velocity
         speed = min(max(speed, 0.0), 1.0)
         await self.onvif.continuous_move(pan * speed, tilt * speed, timeout)
 
     async def step(self, direction: Direction | str, amount: float = 0.05) -> None:
-        """その向きへ、決まった量だけ動かす。amount は可動域の全体を 2 としたときの量。"""
-        pan, tilt = Direction(direction).velocity
+        """その向き（部屋から見て）へ、決まった量だけ動かす。amount は可動域の全体を 2 としたときの量。inverted なら向きを入れ替える。"""
+        pan, tilt = self._view(direction).velocity
         await self.onvif.relative_move(-pan * amount, tilt * amount)  # 位置の pan は、速度と向きが逆
 
     async def stop(self) -> None:

@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from tapo_c220 import Direction, MediaError, OnvifClient, OnvifError, TapoC220, TapoConfig
-from tapo_c220.onvif import redact
+from tapo_c220.onvif import PtzPosition, redact
 from tapo_c220 import talk
 from tapo_c220.tapo.stream import Connection, digest_password
 from tapo_c220.talk import Muxer, TalkError, _reply_params, crc32_mpeg, header_packets, play_alaw
@@ -383,3 +383,40 @@ async def test_live_packets_stop_when_reader_is_too_slow(monkeypatch):
         async for _ in live:
             pass
     assert closed and live._queue.qsize() < 10
+
+
+async def test_inverted_camera_swaps_directions_and_room_position():
+    camera = TapoC220(CFG, inverted=True)
+    client, sent = _client(lambda _: httpx.Response(200, text=_envelope("<tptz:OkResponse/>")))
+    camera.onvif = client
+    await camera.step("up", 0.1)          # 逆さ：up を指示すると下向きの指示になる
+    assert 'y="-0.100000"' in sent[-1]
+    await camera.step("left", 0.1)        # left → right の指示（位置の pan は負）
+    assert 'x="-0.100000"' in sent[-1]
+    await camera.move("right", 0.4)
+    assert 'x="-0.400000"' in sent[-1]
+    assert camera.room_position(PtzPosition(0.5, -0.2)) == PtzPosition(-0.5, 0.2)
+    assert TapoC220(CFG, inverted=False).room_position(PtzPosition(0.5, -0.2)) == PtzPosition(0.5, -0.2)
+
+
+async def test_detect_inverted_reads_flip_and_explicit_wins():
+    class Settings:
+        def __init__(self, value=None, error=None):
+            self.value, self.error, self.calls = value, error, 0
+
+        async def flip(self):
+            self.calls += 1
+            if self.error:
+                raise self.error
+            return self.value
+
+    camera = TapoC220(CFG)
+    assert camera.inverted is None
+    camera._settings = Settings(True)
+    assert await camera.detect_inverted() is True and camera.inverted is True
+    explicit = TapoC220(CFG, inverted=False)
+    explicit._settings = Settings(True)
+    assert await explicit.detect_inverted() is False and explicit._settings.calls == 0
+    broken = TapoC220(CFG)
+    broken._settings = Settings(error=OSError("down"))
+    assert await broken.detect_inverted() is False and broken.inverted is None

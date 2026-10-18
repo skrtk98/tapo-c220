@@ -114,6 +114,10 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.camera = camera or TapoC220()
+        try:
+            await app.state.camera.detect_inverted()   # 逆さに付けていれば、矢印の向きを合わせる
+        except Exception:  # noqa: BLE001
+            pass
         app.state.webrtc = WebRtcSessions(app.state.camera.cfg)
         app.state.sdcard = app.state.camera.sdcard
         yield

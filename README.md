@@ -65,6 +65,7 @@ async with TapoC220() as cam:                 # .env を読む
     await cam.move("left", speed=0.5)         # 動かし続ける
     await cam.stop()
     await cam.step("up", 0.05)                # 決まった量だけ動かす
+    await cam.detect_inverted()               # 天井に逆さに付けている（上下反転がオン）なら、以後 move・step の向きを部屋から見た向きに合わせる
     await cam.play("hello.mp3")               # カメラのスピーカーで鳴らす
     await rec.stop()
     async for chunk in cam.live_audio():      # マイクの音（MP3）
@@ -161,7 +162,12 @@ packets = cam.sdcard.packets(start)            # packets.SdPackets。録画を s
 - 位置・移動量・速度はどれも -1〜1 の正規化した値。ズームは無い。プリセットは8件まで（保存・移動・削除を確認）。
 - **pan の向きが、速度と位置で逆。** ContinuousMove の速度は正の pan で画面が右へ動くが、
   位置（GetStatus・AbsoluteMove・RelativeMove）は正の pan で左を向く。tilt はどちらも正で上。
-  （この個体を据え置きで使ったときの実測。画像の反転設定で変わるかは未検証。）
+  （この個体を据え置きで使ったときの実測。）
+- **画像の上下反転（flip）をオンにして天井に逆さに付けると、首振りは上下左右とも逆になる**（実機：step up は部屋の下、step left は部屋の右を向いた）。
+  `TapoC220.inverted`（None は未確定＝正立として扱う。コンストラクタ引数か代入で明示）と `await cam.detect_inverted()`（`settings.flip()` から決める。
+  読めなければ False で警告）があり、inverted のとき `move`・`step` は向きを入れ替える。生の位置を部屋から見た向き
+  （pan 正で左、tilt 正で上）に直すのは `cam.room_position(pos)`。`goto`・`position()`・プリセットは生の値のまま。
+  CLI の `move`・`step` は `--inverted auto|on|off`（既定 auto）。
 - ContinuousMove の Timeout は整数の秒だけ。`PT0.5S` を送ると、カメラの HTTP サーバが壊れた応答（500）を返す。
   ライブラリは秒を切り上げて送る。Timeout を省くとカメラの既定（180 秒）まで動き続けるので、WebUI は 5 秒を指定し、
   押している間は 3 秒ごとに送り直す。
