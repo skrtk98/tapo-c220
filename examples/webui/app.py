@@ -1,21 +1,25 @@
 """tapo_c220 ライブラリの使用例：TapoC220 を HTTP から呼ぶだけの薄い WebUI。
 
-認証は無いので、信頼できるネットワークの中だけで使うこと。リポジトリの直下で
-`uv run --package tapo-c220-webui examples/webui/app.py` として起こす（`.env` と `recordings/` は、起こした場所のものを使う）。
+リポジトリの直下で `uv run --package tapo-c220-webui examples/webui/app.py` として起こす（`.env` と `recordings/` は、起こした場所のものを使う）。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
+import ipaddress
 import os
 import re
+import secrets
 import tempfile
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -96,7 +100,8 @@ class RecordStart(BaseModel):
     stream: str = Field(MAIN, pattern="^stream[12]$")
 
 
-def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None) -> FastAPI:
+def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None,
+               password: str | None = None, allowed_hosts: list[str] | None = None) -> FastAPI:
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
     export: dict = {"task": None, "name": "", "seconds": 0.0, "done": 0.0, "error": ""}  # SD カードからの取り出し
@@ -135,6 +140,20 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         await app.state.camera.aclose()
 
     app = FastAPI(title="Tapo C220", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def protect_browser_requests(request: Request, call_next):
+        host = request.headers.get("host", "")
+        if allowed_hosts is not None and not _host_allowed(host, allowed_hosts):
+            return JSONResponse({"detail": "許可されていない Host"}, status_code=400)
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin is not None and not _origin_matches_host(origin, host):
+                return JSONResponse({"detail": "Origin が Host と一致しない（ほかのサイトからの要求）"}, status_code=403)
+        if password is not None and not _has_password(request.headers.get("authorization"), password):
+            return JSONResponse({"detail": "認証が要る"}, status_code=401,
+                                headers={"WWW-Authenticate": 'Basic realm="Tapo C220"'})
+        return await call_next(request)
 
     def cam() -> TapoC220:
         return app.state.camera
@@ -452,14 +471,112 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
     return app
 
 
-def main() -> None:
+def is_loopback_host(host: str) -> bool:
+    """待ち受け先がループバックアドレスか調べる。"""
+    if host.lower() == "localhost":
+        return True
+    value = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_name(value: str) -> str | None:
+    """Host または許可名から、ポートを除いたホスト名を取り出す。"""
+    try:
+        parsed = urlsplit("//" + value)
+        if parsed.username is not None or parsed.password is not None or parsed.path or parsed.query or parsed.fragment:
+            return None
+        parsed.port  # 不正なポート番号も拒む
+        if not parsed.hostname:
+            return None
+        try:
+            return str(ipaddress.ip_address(parsed.hostname))
+        except ValueError:
+            return parsed.hostname.lower().rstrip(".")
+    except ValueError:
+        return None
+
+
+def _host_allowed(host: str, allowed_hosts: list[str]) -> bool:
+    name = _host_name(host)
+    return name is not None and any(name == _host_name(allowed) for allowed in allowed_hosts)
+
+
+def _origin_matches_host(origin: str, host: str) -> bool:
+    try:
+        parsed = urlsplit(origin)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return False
+        if parsed.username is not None or parsed.password is not None or parsed.path or parsed.query or parsed.fragment:
+            return False
+        parsed.port  # 不正なポート番号も拒む
+        return parsed.netloc.lower() == host.lower()
+    except ValueError:
+        return False
+
+
+def _has_password(authorization: str | None, password: str) -> bool:
+    if authorization is None:
+        return False
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "basic":
+        return False
+    try:
+        credentials = base64.b64decode(token, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    _, separator, supplied = credentials.partition(b":")
+    expected = password.encode("utf-8")
+    matches = secrets.compare_digest(supplied, expected)
+    return bool(separator and matches)
+
+
+def build_allowed_hosts(host: str, configured: list[str]) -> list[str] | None:
+    """待ち受け先と標準のローカル名、追加の許可名から Host 一覧を作る。"""
+    if host in ("0.0.0.0", "::") and not configured:
+        return None
+    bind_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        address = ipaddress.ip_address(bind_host)
+        bind_host = f"[{address.compressed}]" if address.version == 6 else str(address)
+    except ValueError:
+        pass
+    return [bind_host, "localhost", "127.0.0.1", "[::1]", *configured]
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Tapo C220 の WebUI",
+        epilog="Basic 認証のパスワードは、平文の HTTP では盗聴できる。LAN の外から使うなら、TLS の逆プロキシを前に置くこと。",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="待ち受けるアドレス（既定は 127.0.0.1）")
+    parser.add_argument("--port", type=int, default=8220)
+    parser.add_argument("--password", help="WebUI の Basic 認証パスワード（環境変数 TAPO_WEBUI_PASSWORD より優先）")
+    parser.add_argument("--allowed-host", action="append", default=None,
+                        help="Host ヘッダで許す名前（複数指定可。TAPO_WEBUI_ALLOWED_HOSTS と併用）")
+    return parser
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    args.password = args.password if args.password is not None else os.environ.get("TAPO_WEBUI_PASSWORD")
+    args.password = args.password or None
+    configured = [name.strip() for name in os.environ.get("TAPO_WEBUI_ALLOWED_HOSTS", "").split(",") if name.strip()]
+    configured.extend(args.allowed_host or [])
+    args.allowed_hosts = build_allowed_hosts(args.host, configured)
+    if not is_loopback_host(args.host) and not args.password:
+        parser.error("ループバック以外で待ち受けるなら、パスワードが要る（--password か TAPO_WEBUI_PASSWORD）")
+    return args
+
+
+def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
-    parser = argparse.ArgumentParser(description="Tapo C220 の WebUI")
-    parser.add_argument("--host", default="127.0.0.1", help="待ち受けるアドレス（既定は手元だけ。認証が無いので公開しないこと）")
-    parser.add_argument("--port", type=int, default=8220)
-    args = parser.parse_args()
-    uvicorn.run(create_app(), host=args.host, port=args.port)
+    args = _parse_args(argv)
+    uvicorn.run(create_app(password=args.password, allowed_hosts=args.allowed_hosts), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

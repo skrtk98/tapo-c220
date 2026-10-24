@@ -36,7 +36,7 @@ examples/webui/           # 使用例：pyproject.toml、app.py、static/index.h
 ライブラリの追加の依存：`tapo-c220[tapo]`（設定、microSD の録画。pytapo と cryptography）、
 `tapo-c220[packets]`（映像と音声をパケットとして取り出す。PyAV）。無しでも RTSP・ONVIF・スピーカーは使える。
 
-WebUI には認証が無い。既定では手元（127.0.0.1）でしか待ち受けない。録音・録画は、起こした場所の `recordings/`（`TAPO_RECORD_DIR`）に保存する。
+WebUI は既定では手元（127.0.0.1）で待ち受ける。録音・録画は、起こした場所の `recordings/`（`TAPO_RECORD_DIR`）に保存する。
 
 コマンドライン（`tapo-c220 <コマンド> --help` で引数が出る。結果は JSON で出す）：
 
@@ -302,6 +302,20 @@ async for event in cam.events():                    # やめるまで続く。Ev
 ## WebUI（使用例、`examples/webui/`）
 
 ライブラリの外に置いたサンプルで、`TapoC220` などを HTTP から呼ぶだけの FastAPI のアプリ。
+
+```sh
+uv run --package tapo-c220-webui examples/webui/app.py --password 'WebUI のパスワード'
+uv run --package tapo-c220-webui examples/webui/app.py --host 0.0.0.0 --password 'WebUI のパスワード' --allowed-host camera.example
+```
+
+`--password` または環境変数 `TAPO_WEBUI_PASSWORD` で HTTP Basic 認証を設定する（両方ある場合は `--password` が優先）。
+非ループバックのアドレスで待ち受けるにはパスワードが必須。
+Host ヘッダで許す名前は `--allowed-host` を複数指定するか、環境変数 `TAPO_WEBUI_ALLOWED_HOSTS` に
+カンマ区切りで指定できる。
+`0.0.0.0` と `::` で待ち受け、許可名を指定しない場合は Host の検査をしない。
+Basic 認証のパスワードは平文 HTTP では盗聴できる。LAN の外から使う場合は TLS の逆プロキシを
+前に置くこと（逆プロキシは Host をそのまま渡す。書き換えると、POST が Origin の検査で弾かれる）。
+どの待ち受けでも、ほかのサイトからの POST など（Origin が Host と違う要求）と、許可していない Host（DNS リバインディング）は拒む。
 
 - ライブ映像：既定は WebRTC（640×360 / 2560×1440、音あり）。カメラの H.264 と G.711 A-law は WebRTC の標準のコーデックなので、
   変換せずそのまま RTP に載せ替えている。合図は `POST /api/webrtc/offer` の1往復だけで、STUN/TURN は使わない（同じ LAN の中で使う前提）。
