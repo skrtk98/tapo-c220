@@ -27,6 +27,7 @@ from tapo_c220.packets import LivePackets, Packet
 _CODECS = {"video": "video/H264", "audio": "audio/PCMA"}
 _VIDEO_CLOCK = 90000   # 映像の時刻の刻み（RTP と同じ）
 _FRAME_SECONDS = 0.02  # 録画の音声を渡す1回ぶんの長さ
+_TRACK_BACKLOG = 300   # 映像15fpsと音声50個/秒で、合わせて約4.6秒ぶん
 
 
 class QueueTrack(MediaStreamTrack):
@@ -35,7 +36,7 @@ class QueueTrack(MediaStreamTrack):
     def __init__(self, kind: str, on_stop: Callable[[], None] | None = None):
         super().__init__()
         self.kind = kind
-        self.queue: asyncio.Queue = asyncio.Queue()
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize=_TRACK_BACKLOG)
         self._on_stop = on_stop
 
     async def recv(self):
@@ -103,7 +104,12 @@ class PcmFrames:
 
 
 class Feeder:
-    """パケットの源（LivePackets や SdPackets）を読み、映像と音声のトラックへ配る。どちらかのトラックが止まると、読むのもやめる。"""
+    """パケットの源（LivePackets や SdPackets）を読み、映像と音声のトラックへ配る。
+
+    トラックのキューが満杯なら源から読むのを待つ。録画は源の上限でカメラから受け取るのを止め、ライブは読み手が止まると源の上限で MediaError になる。
+    aiortc は接続後に全トラックの recv を呼び続けるため、片方が満杯になると両方の読み込みが止まってもよい。
+    接続確立前はどちらも読まれず、キューと源の上限ぶんだけ溜まり、確立が遅すぎるとライブはエラーになる。
+    """
 
     def __init__(self, source, kinds=("video", "audio"), *, audio: Callable[[Packet], list] = passthrough):
         self.source = source
@@ -140,13 +146,16 @@ class Feeder:
                 track = self.tracks.get(packet.kind)
                 if track is not None:
                     for item in self._convert[packet.kind](packet):
-                        track.queue.put_nowait(item)
+                        await track.queue.put(item)
         except (StreamError, MediaError) as e:
             self.error = str(e)
         finally:
             self.finished = True
             await self.source.aclose()
             for track in self.tracks.values():
+                if track.queue.full():  # 終わったトラックの未送信分を捨て、終わりの印を入れる
+                    while not track.queue.empty():
+                        track.queue.get_nowait()
                 track.queue.put_nowait(None)
 
 
