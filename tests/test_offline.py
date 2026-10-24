@@ -3,6 +3,7 @@
 import asyncio
 import socket
 import sys
+import threading
 import time
 
 import httpx
@@ -15,6 +16,117 @@ from tapo_c220.tapo.stream import Connection, digest_password
 from tapo_c220.talk import Muxer, TalkError, _reply_params, crc32_mpeg, header_packets, play_alaw
 
 CFG = TapoConfig(host="192.0.2.1", user="user", password="p@ss/word", cloud_password="cloud")
+
+
+async def _wait_for_thread(event: threading.Event) -> None:
+    for _ in range(200):
+        if event.is_set():
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail("同期処理が始まらなかった")
+
+
+async def _wait_for_task(task) -> None:
+    for _ in range(200):
+        if task.done():
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail("非同期処理が終わらなかった")
+
+
+async def test_tapo_api_cancel_waits_for_running_worker(monkeypatch):
+    from tapo_c220.tapo.api import TapoApi
+
+    api = TapoApi(CFG.host, CFG.cloud_password)
+    monkeypatch.setattr(api, "_connect", lambda: object())
+    started, finish, second_started = threading.Event(), threading.Event(), threading.Event()
+    order = []
+
+    def first(_client):
+        started.set()
+        assert finish.wait(5)
+        order.append("first")
+
+    def second(_client):
+        second_started.set()
+        order.append("second")
+        return "done"
+
+    first_call = asyncio.create_task(api.call(first))
+    await _wait_for_thread(started)
+    first_call.cancel()
+    second_call = asyncio.create_task(api.call(second))
+    try:
+        await asyncio.sleep(0.05)
+        assert not second_started.is_set()
+        assert not first_call.done()
+        first_call.cancel()
+        await asyncio.sleep(0.05)
+        assert not second_started.is_set()
+        assert not first_call.done()
+    finally:
+        finish.set()
+    await _wait_for_task(first_call)
+
+    with pytest.raises(asyncio.CancelledError):
+        await first_call
+    await _wait_for_task(second_call)
+    assert await second_call == "done"
+    assert order == ["first", "second"]
+
+
+async def test_tapo_api_cancel_discards_worker_error_and_resets_client(monkeypatch):
+    from tapo_c220.tapo.api import TapoApi
+
+    api = TapoApi(CFG.host, CFG.cloud_password)
+    client = object()
+    api._client = client
+    monkeypatch.setattr(api, "_connect", lambda: client)
+    started, finish = threading.Event(), threading.Event()
+
+    def fail(_client):
+        started.set()
+        assert finish.wait(5)
+        raise RuntimeError("失敗")
+
+    call = asyncio.create_task(api.call(fail))
+    await _wait_for_thread(started)
+    call.cancel()
+    await asyncio.sleep(0)
+    finish.set()
+    await _wait_for_task(call)
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert api._client is None
+
+
+async def test_tapo_api_cancel_while_waiting_for_lock_does_not_start_worker(monkeypatch):
+    from tapo_c220.tapo.api import TapoApi
+
+    api = TapoApi(CFG.host, CFG.cloud_password)
+    monkeypatch.setattr(api, "_connect", lambda: object())
+    started, finish, waiting_started = threading.Event(), threading.Event(), threading.Event()
+
+    def first(_client):
+        started.set()
+        assert finish.wait(5)
+
+    def waiting(_client):
+        waiting_started.set()
+
+    first_call = asyncio.create_task(api.call(first))
+    await _wait_for_thread(started)
+    waiting_call = asyncio.create_task(api.call(waiting))
+    try:
+        await asyncio.sleep(0.05)
+        waiting_call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting_call
+        assert not waiting_started.is_set()
+    finally:
+        finish.set()
+    await _wait_for_task(first_call)
+    await first_call
 
 
 def _envelope(body: str) -> str:

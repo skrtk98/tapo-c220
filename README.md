@@ -72,6 +72,8 @@ async with TapoC220() as cam:                 # .env を読む
         ...
 ```
 
+制御 API（設定など）の呼び出しを取り消しても、始まった要求は終わるまで待ってから取り消す（次の呼び出しと重ならない）。要求はカメラに届いて、設定が変わっていることがある。
+
 映像と音声を自分のプログラムへ引き込む口は `tapo_c220.packets`（PyAV が要る。`tapo-c220[packets]`）。
 ライブも microSD の録画も、変換していないパケットの列（`Packet(kind, data, time, codec, rate, keyframe)`）として同じ形で渡す。
 WebRTC のような配信の方式は、ライブラリは知らない。受け取った側で載せ替える（WebRTC の例が `examples/webui/webrtc.py`）。
