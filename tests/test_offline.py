@@ -700,6 +700,42 @@ async def test_live_packets_stop_when_reader_is_too_slow(monkeypatch):
     assert closed and live._queue.qsize() < 10
 
 
+async def test_live_packets_counts_packets_reserved_on_event_loop(monkeypatch):
+    """イベントループが予約を処理する前でも、上限を超えたら止まる。"""
+    from threading import Thread
+    from types import SimpleNamespace
+
+    from tapo_c220 import packets
+
+    monkeypatch.setattr(packets, "_BACKLOG", 5)
+    video = SimpleNamespace(type="video", codec_context=SimpleNamespace(name="h264"))
+
+    class Raw:
+        size, time_base, is_keyframe, stream = 3, 1, False, video
+
+        def __init__(self, pts):
+            self.pts = pts
+
+        def __bytes__(self):
+            return b"abc"
+
+    closed = []
+    container = SimpleNamespace(streams=SimpleNamespace(video=[video], audio=[]), close=lambda: closed.append(True),
+                                demux=lambda *streams: (Raw(i / 30) for i in range(100)))
+    live = packets.LivePackets(container)
+    live._started = True
+    thread = Thread(target=live._run, args=(asyncio.get_running_loop(),))
+    thread.start()
+    thread.join()
+
+    assert live._queue.qsize() == 0  # イベントループはまだ予約を処理していない
+    assert live._pending == packets._BACKLOG + 1
+    with pytest.raises(MediaError, match="遅すぎ"):
+        async for _ in live:
+            pass
+    assert closed and live._pending == 0
+
+
 async def test_inverted_camera_swaps_directions_and_room_position():
     camera = TapoC220(CFG, inverted=True)
     client, sent = _client(lambda _: httpx.Response(200, text=_envelope("<tptz:OkResponse/>")))

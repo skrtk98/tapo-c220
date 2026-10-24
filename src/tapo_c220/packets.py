@@ -31,7 +31,7 @@ from .config import TapoConfig
 from .media import MediaError
 
 _OPEN_TIMEOUT = 10  # RTSP の接続と読み取りを諦めるまでの秒数
-_BACKLOG = 1000     # 読む側が受け取っていないパケットの数の上限（ライブの 640×360 で 20 秒ぶんほど）
+_BACKLOG = 1000     # 読む側が受け取っていないパケット（イベントループに予約しただけのものも含む）の上限（20 秒ぶんほど）
 _AUDIO_NAMES = {"pcm_alaw": "alaw", "pcm_mulaw": "mulaw"}
 
 
@@ -81,6 +81,8 @@ class LivePackets:
         self.kinds = {s.type: _AUDIO_NAMES.get(s.codec_context.name, s.codec_context.name) for s in self._streams}
         self._quit = threading.Event()
         self._queue: asyncio.Queue[Packet | None] = asyncio.Queue()
+        self._pending = 0
+        self._pending_lock = threading.Lock()
         self._started = False
         self._overflow = False
 
@@ -109,6 +111,8 @@ class LivePackets:
             if self._overflow:
                 raise MediaError("ライブのパケットを読むのが遅すぎて、溜めきれなくなった")
             raise StopAsyncIteration
+        with self._pending_lock:
+            self._pending -= 1
         return packet
 
     async def aclose(self) -> None:
@@ -129,10 +133,6 @@ class LivePackets:
                             break
                         if not raw.size or raw.pts is None:
                             continue
-                        if self._queue.qsize() > _BACKLOG:  # 読む側が受け取っていない。溜め続けない
-                            self._overflow = True
-                            self._quit.set()
-                            break
                         kind = raw.stream.type
                         if kind == "video":
                             packet = Packet(kind, bytes(raw), retime(float(raw.pts * raw.time_base)), self.kinds[kind],
@@ -141,6 +141,12 @@ class LivePackets:
                             rate = raw.stream.codec_context.sample_rate
                             packet = Packet(kind, bytes(raw), samples / rate, self.kinds[kind], rate)
                             samples += raw.size
+                        with self._pending_lock:
+                            if self._pending > _BACKLOG:
+                                self._overflow = True
+                                self._quit.set()
+                                break
+                            self._pending += 1
                         loop.call_soon_threadsafe(self._queue.put_nowait, packet)
                     break  # カメラが流すのを終えた
                 except av.FFmpegError as e:
@@ -228,6 +234,7 @@ class SdPackets:
         """カメラから TS を受け取り、音声を取り出して渡す。映像は、別スレッドの libav に切り出させる。"""
         try:
             async for chunk in self.sd.playback(self.start, exclusive=True):
+                # libav が予約した映像は数えないが、与えた TS の範囲しか進まないので溜まる量は限られる
                 while self._queue.qsize() > _BACKLOG:  # 読む側が追いつくまで、カメラから受け取るのを止める
                     await asyncio.sleep(0.05)
                 self._ts.feed(chunk)
