@@ -163,6 +163,79 @@ def test_event_notification():
     assert [(e.kind, e.active) for e in parse_messages(root)] == [("person", False), ("motion", True), ("motion", True)]
 
 
+def test_inbox_drops_oldest_active_when_full():
+    from tapo_c220.events import Event, _INBOX_MAX, _Inbox
+
+    inbox = _Inbox()
+    oldest = Event("motion", True, 0, "oldest")
+    ended = Event("person", False, 1, "ended")
+    inbox.put(oldest)
+    inbox.put(ended)
+    for i in range(_INBOX_MAX - 2):
+        inbox.put(Event("motion", True, i + 2, str(i)))
+
+    incoming = Event("tamper", True, _INBOX_MAX, "incoming")
+    inbox.put(incoming)
+
+    assert inbox.dropped == 1
+    assert len(inbox._events) == _INBOX_MAX
+    assert oldest not in inbox._events
+    assert inbox._events[0] == ended
+    assert inbox._events[-1] == incoming
+
+
+def test_inbox_keeps_false_events_when_full():
+    from tapo_c220.events import Event, _INBOX_MAX, _Inbox
+
+    inbox = _Inbox()
+    false_events = [Event("motion", False, i, str(i)) for i in range(_INBOX_MAX)]
+    active = Event("person", True, _INBOX_MAX, "active")
+    inbox.put(false_events[0])
+    inbox.put(active)
+    for event in false_events[1:-1]:
+        inbox.put(event)
+
+    incoming = Event("tamper", False, _INBOX_MAX + 1, "incoming")
+    inbox.put(incoming)
+
+    assert inbox.dropped == 1
+    assert len(inbox._events) == _INBOX_MAX
+    assert active not in inbox._events
+    assert all(event in inbox._events for event in false_events[:-1])
+    assert inbox._events[-1] == incoming
+
+
+def test_inbox_drops_oldest_false_when_all_events_are_false():
+    from tapo_c220.events import Event, _INBOX_MAX, _Inbox
+
+    inbox = _Inbox()
+    events = [Event("motion", False, i, str(i)) for i in range(_INBOX_MAX)]
+    for event in events:
+        inbox.put(event)
+    incoming = Event("motion", False, _INBOX_MAX, "incoming")
+    inbox.put(incoming)
+
+    assert inbox.dropped == 1
+    assert len(inbox._events) == _INBOX_MAX
+    assert events[0] not in inbox._events
+    assert inbox._events[0] == events[1]
+    assert inbox._events[-1] == incoming
+
+
+async def test_inbox_get_timeout_and_waiter():
+    from tapo_c220.events import Event, _Inbox
+
+    inbox = _Inbox()
+    with pytest.raises(TimeoutError):
+        await inbox.get(0.01)
+
+    waiting = asyncio.create_task(inbox.get(1))
+    await asyncio.sleep(0)
+    event = Event("motion", True, 0, "motion")
+    inbox.put(event)
+    assert await waiting == event
+
+
 async def test_events_bind_and_advertise():
     """コンテナの中などでは、待ち受けるアドレスと、カメラに伝える宛先を別に指定できる。"""
     from tapo_c220.events import events
