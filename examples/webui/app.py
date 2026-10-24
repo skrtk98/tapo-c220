@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from tapo_c220 import MAIN, SUB, Direction, MediaError, OnvifError, Recording, StreamError, TapoC220
+from tapo_c220 import MAIN, SUB, Direction, MediaError, OnvifError, PlaybackInterrupted, Recording, StreamError, TapoC220
 from tapo_c220.settings import DayNight, Detection
 from tapo_c220.tapo.api import TapoApiError
 
@@ -99,7 +99,7 @@ class RecordStart(BaseModel):
 def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None) -> FastAPI:
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
-    export: dict = {"task": None, "name": "", "seconds": 0.0, "done": 0.0, "error": ""}  # SD カードからの取り出し
+    export: dict = {"task": None, "name": "", "seconds": 0.0, "done": 0.0, "saved": 0.0, "error": ""}  # SD カードからの取り出し
     player: dict[str, SdPlayer | None] = {"current": None}  # SD カードの録画の再生（1つだけ）
     playing: set[asyncio.Task] = set()  # スピーカーで鳴らしている（順番待ちを含む）処理
     record_lock = asyncio.Lock()  # 開始と停止を1つずつ行う（同時の開始で ffmpeg を2本起こさない）
@@ -241,7 +241,7 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
 
     def export_status() -> dict:
         return {"running": export["task"] is not None, "name": export["name"], "seconds": export["seconds"],
-                "done": round(export["done"], 1), "error": export["error"]}
+                "done": round(export["done"], 1), "saved": round(export["saved"], 1), "error": export["error"]}
 
     @app.get("/api/sd")
     async def sd_overview() -> dict:
@@ -264,14 +264,16 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
         if app.state.sdcard.busy:
             raise HTTPException(409, "録画を再生している間は取り出せない（再生を止めること）")
         name = "sd-" + time.strftime("%Y%m%d-%H%M%S", time.localtime(body.start)) + ".mp4"
-        export.update(name=name, seconds=body.seconds, done=0.0, error="")
+        export.update(name=name, seconds=body.seconds, done=0.0, saved=0.0, error="")
 
         async def work() -> None:
             try:
-                await app.state.sdcard.export(body.start, body.seconds, directory / name,
-                                              progress=lambda done: export.update(done=done))
+                export["saved"] = await app.state.sdcard.export(body.start, body.seconds, directory / name,
+                                                                 progress=lambda done: export.update(done=done))
             except asyncio.CancelledError:
                 export["error"] = "取り出しを止めた"
+            except PlaybackInterrupted as e:
+                export.update(saved=e.saved, done=e.saved, error=str(e))
             except (StreamError, MediaError) as e:
                 export["error"] = str(e)
             finally:

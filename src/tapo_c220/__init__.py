@@ -10,6 +10,13 @@ from .talk import TalkError, TapoTalk
 
 __all__ = [
     "MAIN", "SUB", "Direction", "Event", "MediaError", "OnvifClient", "OnvifError", "Preset", "Profile",
-    "PtzPosition", "Recording", "StreamError", "TalkError", "TapoC220", "TapoConfig", "TapoSession", "TapoStream",
-    "TapoTalk",
+    "PlaybackInterrupted", "PtzPosition", "Recording", "StreamError", "TalkError", "TapoC220", "TapoConfig",
+    "TapoSession", "TapoStream", "TapoTalk",
 ]
+
+
+def __getattr__(name: str):
+    if name == "PlaybackInterrupted":  # microSD の依存を使わない利用者には cryptography を要求しない
+        from .sdcard import PlaybackInterrupted
+        return PlaybackInterrupted
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

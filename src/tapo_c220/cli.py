@@ -166,7 +166,7 @@ async def _sd(cam: TapoC220, args: argparse.Namespace) -> None:
             got = await sd.export(_timestamp(args.start), args.seconds, args.path, progress=progress)
             if sys.stderr.isatty():
                 print(file=sys.stderr)
-            _print({"path": args.path, "seconds": round(got, 1)})
+            _print({"path": args.path, "seconds": round(got, 1), "requested_seconds": args.seconds})
 
 
 _INVERTED = {"auto": None, "on": True, "off": False}
@@ -307,6 +307,14 @@ def main(argv: list[str] | None = None) -> None:
     try:
         asyncio.run(_run(args))
     except (OnvifError, MediaError, StreamError, RuntimeError, ValueError) as e:  # TapoApiError は RuntimeError
+        if args.command == "sd" and args.action == "export":
+            from .sdcard import PlaybackInterrupted
+            if isinstance(e, PlaybackInterrupted):
+                if sys.stderr.isatty():
+                    print(file=sys.stderr)
+                _print({"path": str(e.path) if e.path is not None else None, "seconds": round(e.saved, 1),
+                        "error": str(e)})
+                sys.exit(1)
         sys.exit(f"失敗: {e}")
     except ModuleNotFoundError as e:
         sys.exit(f"失敗: {e.name} が入っていない（uv sync --extra tapo で入れる）")

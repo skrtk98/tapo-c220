@@ -179,7 +179,8 @@ class _Feed:
 class SdPackets:
     """microSD の録画を、時刻 start（UNIX 時刻）から、パケットとして順に渡す（`[tapo]` の依存も要る）。
 
-    実時間の速さで届く。録画の終わりまで流し終えると終わる。その時刻に録画が無ければ、読んでいる途中で NoRecording。
+    実時間の速さで届く。finished の通知で正常終了する。その時刻に録画が無ければ NoRecording、
+    映像のあと finished より先に無通信や接続終了になれば PlaybackInterrupted。
     流している間、ほかの取り出しはできない（すでに取り出し中なら SdCardError）。
     """
 
@@ -212,7 +213,7 @@ class SdPackets:
         packet = await self._queue.get()
         if packet is None:
             self._closed = True
-            await self._task  # 取り出しが失敗して終わったのなら、ここでその例外を伝える
+            await self._task  # PlaybackInterrupted を含め、取り出しタスクの例外は読む側へ伝える
             raise StopAsyncIteration
         return packet
 

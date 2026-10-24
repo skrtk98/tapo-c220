@@ -215,7 +215,11 @@ ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP 
 - ファイルの転送ではなく「再生」なので、等速でしか届かない（20 秒ぶんの取り出しに 20.8 秒）。
   2 倍以上の速さを指定するとデータは速く届くが、音声が来なくなり、映像の時刻の進み方も変わるため、使っていない。
 - 終了時刻の指定は守られず流れ続けるので、映像の時刻（PTS）で必要な長さに達したらこちらから切る。
-  録画の無い時刻を指定すると、映像は届かず終了の通知だけが返る。
+  録画の無い時刻を指定すると、映像は届かず終了の通知だけが返る。録画の終端では `finished` の通知が届く前提で正常終了し、
+  途中の無通信や finished より先の接続終了は `PlaybackInterrupted`（`SdCardError` の子）として知らせる。
+  `export()` は finished で要求より短く終わった場合、保存できた秒数を返す。途中中断では受け取れた映像を MP4 に保存してから
+  `PlaybackInterrupted` を投げ、例外の `saved` に保存秒数、`path` に保存先を入れる。
+  C220 では、区間の切れ目では finished は届かず（空いた時間を飛ばして次の区間へ続く）、録画の最新の端まで流すと届くことを確かめた。
 - 取り出している間は、区間の一覧をカメラが出さない（一覧に要る ID の発行が `USER_ID_FULL`（-71101）で拒まれ、先に取った ID も無効になる）。
   取り出しの `client_id` にその ID を使うと一覧は取れるが、今度は取り出しのほうが止まる。両立する方法は見つからなかった。
   録画のある日・検知の記録・カードの状態は、取り出している間も取れる。
@@ -226,7 +230,7 @@ sd = cam.sdcard                               # tapo_c220.sdcard.SdCard
 days = await sd.days()                         # ["20261008", "20261009", ...]
 segments = await sd.segments(days[-1])         # [Segment(start, end, kind), ...]
 await sd.export(segments[-1].start, 60, "clip.mp4")   # 60 秒ぶんを MP4 に（約 60 秒かかる）
-async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を、やめるまで受け取り続ける
+async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を、finished まで受け取る
     ...
 ```
 
