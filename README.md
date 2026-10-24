@@ -317,6 +317,7 @@ uv run --package tapo-c220-webui examples/webui/app.py --host 0.0.0.0 --password
 
 `--password` または環境変数 `TAPO_WEBUI_PASSWORD` で HTTP Basic 認証を設定する（両方ある場合は `--password` が優先）。
 非ループバックのアドレスで待ち受けるにはパスワードが必須。
+`create_app()` を直接使う場合も、要求を受けた側がループバック以外ならパスワードが必須。
 Host ヘッダで許す名前は `--allowed-host` を複数指定するか、環境変数 `TAPO_WEBUI_ALLOWED_HOSTS` に
 カンマ区切りで指定できる。
 `0.0.0.0` と `::` で待ち受け、許可名を指定しない場合は Host の検査をしない。

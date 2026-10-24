@@ -316,6 +316,13 @@ class SdCard:
             except asyncio.TimeoutError:
                 if got_video:
                     raise PlaybackInterrupted(f"録画が途中で届かなくなった（{_STALL_TIMEOUT:g} 秒なにも来ない）") from None
+            except (asyncio.IncompleteReadError, OSError) as e:
+                if got_video:
+                    message = "カメラが録画の途中で接続を閉じた"
+                    if isinstance(e, OSError):
+                        message += f"（{type(e).__name__}）"
+                    raise PlaybackInterrupted(message) from None
+                raise SdCardError(f"録画の取り出しの接続が切れた（{type(e).__name__}）") from None
             if not got_video:
                 raise NoRecording("その時刻の録画が SD カードに無い")
             if not finished:

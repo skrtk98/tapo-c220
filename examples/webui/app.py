@@ -1,6 +1,7 @@
 """tapo_c220 ライブラリの使用例：TapoC220 を HTTP から呼ぶだけの薄い WebUI。
 
 リポジトリの直下で `uv run --package tapo-c220-webui examples/webui/app.py` として起こす（`.env` と `recordings/` は、起こした場所のものを使う）。
+`create_app()` を直接使う場合も、要求を受けた側がループバック以外ならパスワードを必須とする。
 """
 
 from __future__ import annotations
@@ -102,6 +103,9 @@ class RecordStart(BaseModel):
 
 def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = None,
                password: str | None = None, allowed_hosts: list[str] | None = None) -> FastAPI:
+    if password is None:
+        password = os.environ.get("TAPO_WEBUI_PASSWORD")
+    password = password or None
     directory = Path(record_dir or os.environ.get("TAPO_RECORD_DIR") or "recordings")
     state: dict[str, Recording | None] = {"recording": None}
     export: dict = {"task": None, "name": "", "seconds": 0.0, "done": 0.0, "saved": 0.0, "error": ""}  # SD カードからの取り出し
@@ -150,6 +154,10 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
             origin = request.headers.get("origin")
             if origin is not None and not _origin_matches_host(origin, host):
                 return JSONResponse({"detail": "Origin が Host と一致しない（ほかのサイトからの要求）"}, status_code=403)
+        server = request.scope.get("server")
+        if password is None and server is not None and not is_loopback_host(server[0]):
+            return JSONResponse({"detail": "パスワードが無いので、ループバック以外からは使えない（--password か TAPO_WEBUI_PASSWORD）"},
+                                status_code=403)
         if password is not None and not _has_password(request.headers.get("authorization"), password):
             return JSONResponse({"detail": "認証が要る"}, status_code=401,
                                 headers={"WWW-Authenticate": 'Basic realm="Tapo C220"'})
@@ -295,6 +303,8 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
                 export.update(saved=e.saved, done=e.saved, error=str(e))
             except (StreamError, MediaError) as e:
                 export["error"] = str(e)
+            except Exception as e:  # noqa: BLE001 - 例外の文は認証情報を含むことがあるので、種類だけ伝える
+                export["error"] = f"取り出しが失敗した（{type(e).__name__}）"
             finally:
                 export["task"] = None
 

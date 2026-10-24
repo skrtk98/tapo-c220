@@ -317,6 +317,57 @@ async def test_sd_playback_distinguishes_finished_stall_close_and_no_video(
     assert connection.closed
 
 
+@pytest.mark.parametrize("got_video", [True, False])
+async def test_sd_playback_partial_part_eof_is_a_connection_error(monkeypatch, got_video):
+    from types import SimpleNamespace
+
+    from tapo_c220 import PlaybackInterrupted, sdcard
+    from tapo_c220.sdcard import NoRecording, SdCard, SdCardError
+
+    def part(data: bytes) -> bytes:
+        return (f"--x\r\nContent-Type: video/mp2t\r\nContent-Length: {len(data)}\r\n\r\n".encode()
+                + data + b"\r\n")
+
+    data = part(b"ts") if got_video else b""
+    data += b"--x\r\nContent-Type: video/mp2t\r\nContent-Length: 4\r\n\r\nab"
+    reader = asyncio.StreamReader()
+    reader.feed_data(data)
+    reader.feed_eof()
+
+    class Connection:
+        nonce, password = "nonce", "password"
+        closed = False
+
+        def __init__(self):
+            self.reader = reader
+
+        def request(self, request):
+            pass
+
+        async def close(self):
+            self.closed = True
+
+    connection = Connection()
+
+    class Stream:
+        async def connect(self):
+            return connection
+
+    monkeypatch.setattr(sdcard, "decryptor", lambda nonce, password: lambda data: data)
+    sd = SdCard(SimpleNamespace(api=None, stream=Stream()))
+
+    if got_video:
+        with pytest.raises(PlaybackInterrupted, match="カメラが録画の途中で接続を閉じた"):
+            async for _ in sd.playback(100):
+                pass
+    else:
+        with pytest.raises(SdCardError, match="IncompleteReadError") as error:
+            async for _ in sd.playback(100):
+                pass
+        assert not isinstance(error.value, NoRecording)
+    assert connection.closed
+
+
 async def test_sd_export_saves_partial_clip_and_reports_interruption(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

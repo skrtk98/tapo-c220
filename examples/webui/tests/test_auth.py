@@ -89,3 +89,30 @@ async def test_post_from_different_origin_is_rejected():
         )
 
     assert response.status_code == 403
+
+
+async def test_create_app_requires_password_for_non_loopback_request(monkeypatch):
+    monkeypatch.delenv("TAPO_WEBUI_PASSWORD", raising=False)
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://192.0.2.1") as client:
+        rejected = await client.get("/api/record")
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        allowed = await client.get("/api/record")
+
+    assert rejected.status_code == 403
+    assert "TAPO_WEBUI_PASSWORD" in rejected.json()["detail"]
+    assert allowed.status_code == 200
+    assert allowed.json() == {"recording": False}
+
+
+async def test_create_app_reads_password_from_environment(monkeypatch):
+    monkeypatch.setenv("TAPO_WEBUI_PASSWORD", "environment")
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.get("/api/record")
+
+    assert response.status_code == 401
