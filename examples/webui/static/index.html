@@ -496,7 +496,11 @@ async function showSdExport() {
     $("sd-progress").textContent = `取り出し中: ${job.name}　${Math.floor(job.done)} / ${Math.round(job.seconds)} 秒`;
     sdTimer = setTimeout(run(showSdExport), 1000);
   } else if (job.name) {
-    $("sd-progress").textContent = job.error ? `${job.name}: ${job.error}` : `${job.name} を保存した`;
+    const saved = Number(job.saved).toFixed(1), requested = Number(job.seconds).toFixed(1);
+    const shorter = job.saved + 0.05 < job.seconds;
+    $("sd-progress").textContent = job.error
+      ? `${job.name}: ${job.error}`
+      : `${job.name} を保存した（実際 ${saved} 秒 / 要求 ${requested} 秒${shorter ? "、録画がそこで終わった" : ""}）`;
     $("sd-progress").style.color = job.error ? "var(--danger)" : "";
     await loadRecordings();
   }

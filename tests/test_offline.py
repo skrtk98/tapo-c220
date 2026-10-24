@@ -142,6 +142,123 @@ def test_sdcard_ts_reader_and_decryptor():
         decryptor("nonce", "WRONG")(b"\x00" * 32)
 
 
+@pytest.mark.parametrize(
+    ("parts", "eof", "timeout", "expected", "message"),
+    [
+        ([("video/mp2t", b"ts"), ("application/json", b'{"type":"finished"}')], True, False, None, ""),
+        ([("video/mp2t", b"ts")], False, True, "PlaybackInterrupted", "届かなくなった"),
+        ([("video/mp2t", b"ts")], True, False, "PlaybackInterrupted", "接続を閉じた"),
+        ([], True, False, "NoRecording", "録画が SD カードに無い"),
+    ],
+)
+async def test_sd_playback_distinguishes_finished_stall_close_and_no_video(
+    monkeypatch, parts, eof, timeout, expected, message,
+):
+    from types import SimpleNamespace
+
+    import tapo_c220
+    from tapo_c220 import PlaybackInterrupted, sdcard
+    from tapo_c220.sdcard import NoRecording, SdCard
+
+    assert "PlaybackInterrupted" in tapo_c220.__all__
+
+    def part(kind: str, data: bytes) -> bytes:
+        return (f"--x\r\nContent-Type: {kind}\r\nContent-Length: {len(data)}\r\n\r\n".encode()
+                + data + b"\r\n")
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"".join(part(kind, data) for kind, data in parts))
+    if eof:
+        reader.feed_eof()
+
+    class Connection:
+        nonce, password = "nonce", "password"
+
+        def __init__(self):
+            self.reader = reader
+            self.closed = False
+
+        def request(self, request):
+            pass
+
+        async def close(self):
+            self.closed = True
+
+    connection = Connection()
+
+    class Stream:
+        async def connect(self):
+            return connection
+
+    monkeypatch.setattr(sdcard, "decryptor", lambda nonce, password: lambda data: data)
+    if timeout:
+        monkeypatch.setattr(sdcard, "_STALL_TIMEOUT", 0.01)
+    sd = SdCard(SimpleNamespace(api=None, stream=Stream()))
+
+    if expected is None:
+        assert [chunk async for chunk in sd.playback(100)] == [b"ts"]
+    else:
+        error = PlaybackInterrupted if expected == "PlaybackInterrupted" else NoRecording
+        with pytest.raises(error, match=message):
+            async for _ in sd.playback(100):
+                pass
+    assert connection.closed
+
+
+async def test_sd_export_saves_partial_clip_and_reports_interruption(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tapo_c220 import sdcard
+    from tapo_c220.sdcard import PlaybackInterrupted, SdCard
+
+    class Ts:
+        video_seconds = 0.0
+        codec = None
+
+        def feed(self, data):
+            self.video_seconds = 2.25
+
+        def take_audio(self):
+            return b""
+
+    async def playback(start):
+        yield b"partial ts"
+        raise PlaybackInterrupted("録画が途中で届かなくなった（15 秒なにも来ない）")
+
+    async def make_mp4(ts, video, audio, path, seconds):
+        assert video.read_bytes() == b"partial ts" and seconds == 10
+        path.write_bytes(b"mp4")
+
+    monkeypatch.setattr(sdcard, "TsReader", Ts)
+    monkeypatch.setattr(sdcard, "_make_mp4", make_mp4)
+    sd = SdCard(SimpleNamespace(api=None, stream=None))
+    sd.playback = playback
+    path = tmp_path / "partial.mp4"
+
+    with pytest.raises(PlaybackInterrupted, match="秒ぶんまで保存した") as error:
+        await sd.export(100, 10, path)
+    assert error.value.saved == 2.25 and error.value.path == path
+    assert path.read_bytes() == b"mp4"
+
+
+async def test_sd_packets_propagates_playback_interrupted():
+    from types import SimpleNamespace
+
+    from tapo_c220.packets import SdPackets
+    from tapo_c220.sdcard import PlaybackInterrupted
+
+    packets = SdPackets(SimpleNamespace(), 100)
+
+    async def interrupted():
+        raise PlaybackInterrupted("カメラが録画の途中で接続を閉じた")
+
+    packets._task = asyncio.create_task(interrupted())
+    await asyncio.sleep(0)
+    packets._queue.put_nowait(None)
+    with pytest.raises(PlaybackInterrupted, match="接続を閉じた"):
+        await anext(packets)
+
+
 def test_event_notification():
     """カメラが送ってくる Notify から、検知の種類と、始まり・終わりを読む。"""
     import xml.etree.ElementTree as ET
@@ -167,6 +284,7 @@ async def test_events_bind_and_advertise():
     """コンテナの中などでは、待ち受けるアドレスと、カメラに伝える宛先を別に指定できる。"""
     from tapo_c220.events import events
 
+    _require_local_sockets()
     sent = []
 
     class Onvif:
@@ -224,7 +342,17 @@ class _FakeStream:
         return Connection(reader, writer, "nonce", "password")
 
 
+def _require_local_sockets() -> None:
+    try:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+    except OSError:
+        pytest.skip("実行環境がローカル socket を許可していない")
+
+
 async def _fake_camera(behave) -> tuple[asyncio.Server, _FakeStream]:
+    _require_local_sockets()
+
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await reader.readuntil(b"}}\r\n")  # 双方向音声の開始の要求
         writer.write(b'--x\r\nContent-Type: application/json\r\n\r\n{"params":{"error_code":0,"session_id":"7"}}\r\n')
@@ -362,6 +490,8 @@ async def test_live_packets_stop_when_reader_is_too_slow(monkeypatch):
     from tapo_c220 import packets
 
     monkeypatch.setattr(packets, "_BACKLOG", 5)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "call_soon_threadsafe", lambda callback, *args: callback(*args))
     video = SimpleNamespace(type="video", codec_context=SimpleNamespace(name="h264"))
 
     class Raw:

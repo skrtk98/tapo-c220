@@ -38,7 +38,7 @@ _MAX_PART = 4 * 1024 * 1024    # 1つの部分の大きさの上限
 _AUDIO_TYPES = {0x90: ("alaw", 8000), 0x91: ("mulaw", 16000)}
 _VIDEO_TYPE = 0x1B             # H.264
 _FIRST_DATA_TIMEOUT = 12.0     # 開始してから最初の映像が届くまで（録画が無い時刻なら届かない）
-_STALL_TIMEOUT = 15.0          # 途中でこれだけ何も届かなければ、そこまでで終える
+_STALL_TIMEOUT = 15.0          # 映像のあと、これだけ何も届かなければ途中中断とする
 _KINDS = {1: "continuous", 2: "event"}  # 区間の種別（vedio_type）。1 は長く連続した区間、2 は短い区間として返る
 
 
@@ -48,6 +48,15 @@ class SdCardError(StreamError):
 
 class NoRecording(SdCardError):
     """その時刻の録画が SD カードに無い。"""
+
+
+class PlaybackInterrupted(SdCardError):
+    """録画の終わりを示す通知より前に、映像が届かなくなった。"""
+
+    def __init__(self, message: str, saved: float = 0.0, path: Path | None = None):
+        super().__init__(message)
+        self.saved = saved
+        self.path = path
 
 
 @dataclass(frozen=True)
@@ -265,8 +274,9 @@ class SdCard:
         return self._playback_lock.locked()
 
     async def playback(self, start: float, *, exclusive: bool = False) -> AsyncIterator[bytes]:
-        """時刻 start（UNIX 時刻）からの録画を、復号した MPEG-TS の断片として流し続ける。読む側がやめるまで続く。
-        実時間の速さで届く。その時刻に録画が無ければ NoRecording。
+        """時刻 start（UNIX 時刻）からの録画を、復号した MPEG-TS の断片として流す。読む側がやめると停止する。
+        実時間の速さで届く。finished の通知で正常終了し、映像が届かなければ NoRecording。
+        映像のあと finished より先に無通信や接続終了になれば PlaybackInterrupted。
         exclusive を真にすると、流している間ほかの取り出しを待たせる（すでに取り出し中なら SdCardError）。"""
         if exclusive:
             if self._playback_lock.locked():
@@ -279,6 +289,8 @@ class SdCard:
                 yield chunk
 
     async def _playback(self, start: float) -> AsyncIterator[bytes]:
+        """録画を読み、finished は正常終了、映像なしは NoRecording とする。
+        映像のあと finished より先の無通信や接続終了は PlaybackInterrupted とする。"""
         waiting = _FIRST_DATA_TIMEOUT
         connection = await self.stream.connect()
         try:
@@ -287,6 +299,7 @@ class SdCard:
                 "client_id": 1, "channels": [0], "scale": "1/1", "start_time": str(int(start)),
                 "end_time": str(int(start) + 86400), "event_type": [1, 2]}, "method": "get"})
             got_video = False
+            finished = False
             try:
                 async for headers, data in _read_parts(connection.reader, lambda: waiting):
                     kind = headers.get("content-type", "")
@@ -294,15 +307,19 @@ class SdCard:
                         code = re.search(rb'"error_code"\s*:\s*(-?\d+)', data)
                         if code and int(code.group(1)) != 0:
                             raise NoRecording(f"カメラが再生を始めなかった（error_code {code.group(1).decode()}）")
-                        if b'"finished"' in data:  # 録画の終わりまで流し終えた
+                        if b'"finished"' in data:  # 録画の最新の端まで流すと finished が届く（C220 で確認。区間の切れ目では届かず、次の区間へ続く）
+                            finished = True
                             break
                     elif kind == "video/mp2t":
                         got_video, waiting = True, _STALL_TIMEOUT
                         yield decrypt(data)
             except asyncio.TimeoutError:
-                pass
+                if got_video:
+                    raise PlaybackInterrupted(f"録画が途中で届かなくなった（{_STALL_TIMEOUT:g} 秒なにも来ない）") from None
             if not got_video:
                 raise NoRecording("その時刻の録画が SD カードに無い")
+            if not finished:
+                raise PlaybackInterrupted("カメラが録画の途中で接続を閉じた")
         finally:
             await connection.close()
 
@@ -315,12 +332,15 @@ class SdCard:
     async def export(self, start: float, seconds: float, path: str | Path, *,
                      progress: Callable[[float], None] | None = None) -> float:
         """時刻 start から seconds 秒ぶんの録画を MP4（H.264 はそのまま、音声は AAC）として保存する。保存できた秒数を返す。
+        録画が finished で要求より先に終わると、実際に保存できた短い秒数を返す。再生が途中で切れた場合は、
+        受け取れた映像を保存して PlaybackInterrupted を投げる（saved と path に保存結果が入る）。
         実時間の速さで届くので、seconds 秒ほどかかる。
         指定した時刻の直前のキーフレームから始まるので、少し手前から入ることがある。
         progress には、取り出せた秒数が随時渡される。"""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         ts = TsReader()
+        interrupted: PlaybackInterrupted | None = None
         async with self._playback_lock:
             with tempfile.TemporaryDirectory(dir=path.parent) as tmp:
                 video, audio = Path(tmp) / "video.ts", Path(tmp) / "audio.raw"
@@ -335,30 +355,58 @@ class SdCard:
                                 progress(min(ts.video_seconds, seconds))
                             if ts.video_seconds >= seconds:
                                 break
+                    except PlaybackInterrupted as e:
+                        interrupted = e
                     finally:
                         await stream.aclose()
                 got = min(ts.video_seconds, seconds)
-                argv = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-fflags", "+genpts",
-                        "-f", "mpegts", "-i", str(video)]
-                if ts.codec and audio.stat().st_size:
-                    form, rate = ts.codec
-                    argv += ["-f", form, "-ar", str(rate), "-ac", "1", "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
-                             "-c:a", "aac", "-b:a", "64k"]
-                else:
-                    argv += ["-map", "0:v:0"]
-                argv += ["-c:v", "copy", "-t", f"{seconds:.3f}", "-movflags", "+faststart", "-f", "mp4", "-y", str(path)]
-                proc = await spawn(*argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-                try:
-                    _, err = await proc.communicate()
-                except BaseException:
-                    proc.kill()
-                    await proc.wait()
-                    path.unlink(missing_ok=True)
-                    raise
-                if proc.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
-                    path.unlink(missing_ok=True)
-                    raise MediaError(f"録画を MP4 にできなかった（{err.decode(errors='replace').strip()[-300:]}）")
+                if interrupted is None or ts.video_seconds > 0:
+                    try:
+                        await _make_mp4(ts, video, audio, path, seconds)
+                    except MediaError as e:
+                        if interrupted is None:
+                            raise
+                        interrupted.saved = 0.0
+                        interrupted.path = None
+                        interrupted.args = (f"{interrupted}（受け取れた分も MP4 にできなかった: {e}）",)
+                        raise interrupted from e
+                if interrupted is not None:
+                    interrupted.saved = got if path.is_file() else 0.0
+                    interrupted.path = path if interrupted.saved > 0 else None
+                    saved = f"{interrupted.saved:.1f} 秒ぶんまで保存した"
+                    if interrupted.path is None:
+                        saved = f"MP4 は作れず、{saved}"
+                    interrupted.args = (f"{interrupted}（{saved}）",)
+                    raise interrupted
         return got
 
     def close(self) -> None:
         self.api.close()
+
+
+async def _make_mp4(ts: TsReader, video: Path, audio: Path, path: Path, seconds: float) -> None:
+    """一時 TS と抽出した音声を MP4 にまとめる。"""
+    argv = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-fflags", "+genpts",
+            "-f", "mpegts", "-i", str(video)]
+    if ts.codec and audio.stat().st_size:
+        form, rate = ts.codec
+        argv += ["-f", form, "-ar", str(rate), "-ac", "1", "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
+                 "-c:a", "aac", "-b:a", "64k"]
+    else:
+        argv += ["-map", "0:v:0"]
+    argv += ["-c:v", "copy", "-t", f"{seconds:.3f}", "-movflags", "+faststart", "-f", "mp4", "-y", str(path)]
+    try:
+        proc = await spawn(*argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    except OSError as e:
+        path.unlink(missing_ok=True)
+        raise MediaError(f"録画を MP4 にできなかった（{e}）") from e
+    try:
+        _, err = await proc.communicate()
+    except BaseException:
+        proc.kill()
+        await proc.wait()
+        path.unlink(missing_ok=True)
+        raise
+    if proc.returncode != 0 or not path.is_file() or path.stat().st_size == 0:
+        path.unlink(missing_ok=True)
+        raise MediaError(f"録画を MP4 にできなかった（{err.decode(errors='replace').strip()[-300:]}）")
