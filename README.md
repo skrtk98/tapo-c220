@@ -103,145 +103,61 @@ packets = cam.sdcard.packets(start)            # packets.SdPackets。録画を s
 
 ## 調査結果
 
-### 経路の分け方
+詳しい調査結果（実測の値、生の応答の形、試してうまくいかなかったこと）は [Wiki](https://github.com/skrtk98/tapo-c220/wiki) にまとめた。
+ここには、ライブラリを使うときに要る要点だけを置く。
 
-| 分類 | 経路 | ポート | 通信の形 | 認証 | 使いみち |
+| 分類 | 経路 | ポート | 認証 | 使いみち | Wiki |
 | --- | --- | --- | --- | --- | --- |
-| 標準 | RTSP | 554 | RTP を流し続ける | カメラアカウント（Digest） | 映像・音声、録音・録画、静止画 |
-| 標準 | ONVIF | 2020 | SOAP を1往復ずつ | カメラアカウント（WS-Security） | 首振り、検知イベント |
-| Tapo 独自 | 制御 API | 443 | 暗号化した JSON を1往復ずつ | Tapo アカウント（ユーザは admin） | 設定、録画の一覧、検知の記録 |
-| Tapo 独自 | ストリーム | 8800 | 1本の接続に流し続ける | Tapo アカウント（接続ごとに Digest） | スピーカー、録画の取り出し |
+| 標準 | RTSP | 554 | カメラアカウント（Digest） | 映像・音声、録音・録画、静止画 | [RTSP](https://github.com/skrtk98/tapo-c220/wiki/RTSP) |
+| 標準 | ONVIF | 2020 | カメラアカウント（WS-Security） | 首振り、検知イベント | [ONVIF](https://github.com/skrtk98/tapo-c220/wiki/ONVIF)・[PTZ](https://github.com/skrtk98/tapo-c220/wiki/PTZ)・[検知イベント](https://github.com/skrtk98/tapo-c220/wiki/検知イベント) |
+| Tapo 独自 | 制御 API | 443 | Tapo アカウント（ユーザは admin） | 設定、録画の一覧、検知の記録 | [制御 API と設定](https://github.com/skrtk98/tapo-c220/wiki/制御-API-と設定) |
+| Tapo 独自 | ストリーム | 8800 | Tapo アカウント（接続ごとに Digest） | スピーカー、録画の取り出し | [8800 番のストリーム](https://github.com/skrtk98/tapo-c220/wiki/8800-番のストリーム)・[microSD の録画](https://github.com/skrtk98/tapo-c220/wiki/microSD-の録画) |
 
 コードもこの分け方に合わせてある。経路ごとの窓口は、RTSP が `media`、ONVIF が `onvif`、Tapo 独自の 443 番が `tapo.api.TapoApi`、8800 番が `tapo.stream.TapoStream`。
 窓口を使う機能（`events`・`settings`・`talk`・`sdcard` など）は、その上に並べている。
-
-### どの機能を、どの経路で実現できたか
+Tapo 独自の経路は非公式なので、ファームウェアの更新で使えなくなる可能性がある。
 
 | 機能 | 経路 | 結果 |
 | --- | --- | --- |
-| 映像・音声のストリーミング | RTSP（554 番） | できる |
-| 録音・録画 | RTSP を ffmpeg で保存 | できる |
-| 静止画 | RTSP から1枚切り出す | できる（ONVIF の GetSnapshotUri は無い） |
-| 首振り（上下左右） | ONVIF PTZ（2020 番） | できる（絶対・相対・連続・停止・プリセット） |
-| スピーカーからの再生 | **RTSP/ONVIF では不可**。Tapo 独自の双方向音声（8800 番） | できる（非公式のプロトコル） |
-| microSD の録画の一覧と取り出し | **RTSP/ONVIF では不可**。Tapo 独自の API（443 番）と再生（8800 番） | できる（非公式。等速でしか届かない） |
-| 設定の読み書き（画質、昼夜、検知、音量など） | Tapo 独自の API（443 番） | できる（非公式） |
-| 検知イベントの受信 | ONVIF のイベント（カメラからこちらへ通知させる） | できる（PullPoint は不可） |
-| 警報をいますぐ鳴らす | Tapo 独自の API | **API が見つからない**。スピーカーへサイレンの音を送って代える |
+| 映像・音声、録音・録画、静止画 | RTSP | できる（ONVIF の GetSnapshotUri は無いので、静止画も RTSP から切り出す） |
+| 首振り | ONVIF PTZ | できる（絶対・相対・連続・停止・プリセット） |
+| スピーカーからの再生 | 8800 番 | できる。RTSP・ONVIF には音声を送る経路が無い |
+| microSD の録画の一覧と取り出し | 443 番と 8800 番 | できる。等速でしか届かない |
+| 設定の読み書き | 443 番 | できる |
+| 検知イベントの受信 | ONVIF の Subscribe | できる。PullPoint は使えない |
+| 警報をいますぐ鳴らす | — | 確かな API が見つからない。スピーカーへサイレンの音を送って代える |
 
-開いているポートは 443・554・2020・8800。
+### 使うときの注意
 
-### RTSP
-
-- URL は `rtsp://ユーザ:パスワード@ホスト:554/stream1`。認証は Digest、カメラアカウントを使う。
-- `stream1` は H.264 High 2560×1440、`stream2` は H.264 High 640×360。音声はどちらも G.711 A-law の 8kHz モノラル。
-  ONVIF は音声を 16kHz と答えるが、SDP も実際の中身も 8kHz。
-- `stream8` は MJPEG 640×360（ONVIF の profile_3「jpegStream」）。ただし5秒間に届いた約300枚のうち別の画像は5枚だけで、
-  同じ画像を送り直してくる（約 25Mbps）。Chromium ではこの JPEG が灰色にしか描かれなかった。
-  このストリームは使っていない。
-- 同時に受けられるのは3接続まで。4本めは接続時に拒まれる（同じストリーム3本でも、別々のストリームでも同じ）。
-- 音声のトラックだけを SETUP すると（ffmpeg の `-allowed_media_types audio`）、何も届かず時間切れになる。
-  録音するときも映像ごと受け取って捨てる。
-- **RTCP の時刻が乱れている。** RTP のタイムスタンプは正しく進み、パケットも滑らかに届く（30fps、到着の間隔は中央値 33ms・最大 80ms 弱、
-  ping は 2ms 前後で損失なし）。しかし約 0.5 秒ごとに届く RTCP の Sender Report の NTP 時刻が、交互に約 ±0.38 秒ずれている。
-  libav（ffmpeg）はこれに合わせて pts を直すので、pts が約 0.35 秒戻っては約 0.42 秒飛ぶことを毎秒くり返す。
-  そのまま使うと、WebRTC ではブラウザが映像を毎秒止め（20 秒で 20 回・計 7 秒）、音声の約 43% を補間で埋めた。MP4 の録画も映像が毎秒つかえる。
-  対策として、WebRTC ではタイムスタンプを付け直し（音声は標本の数、映像は飛びを普通の進み幅に置き換える）、
-  ffmpeg では届いた時刻を使う（`-use_wallclock_as_timestamps 1`）。対策後は、止まり 0 回・補間 0%・30fps。
-- カメラへ音声を送るトラックは無い。`Require: www.onvif.org/ver20/backchannel` をつけて DESCRIBE しても、SDP は映像と音声（受信）の2本だけ。
-
-### ONVIF
-
-- 入口は `http://ホスト:2020/onvif/service`。認証は WS-Security の UsernameToken（PasswordDigest）だけ。
-- サービスは device・media（ver10）・events・analytics・imaging・ptz・deviceIO。版はどれも 2.20。
-- プロファイルは `profile_1`（stream1）、`profile_2`（stream2）、`profile_3`（stream8）の3つで、どれにも PTZ がつく。
-- 対応しない操作は `ter:ActionNotSupported` が返る：GetSnapshotUri、GotoHomePosition。
-- GetAudioOutputs と GetAudioDecoderConfigurations は空。deviceIO の能力は AudioOutputs="1" と答えるが、使える出力は無い。
-- イベントは PullPoint 対応で、動体・いたずら・ライン横断・人物・TPSmartEvent のトピックがある（中身は未検証）。
-
-### PTZ
-
-- 位置・移動量・速度はどれも -1〜1 の正規化した値。ズームは無い。プリセットは8件まで（保存・移動・削除を確認）。
-- **pan の向きが、速度と位置で逆。** ContinuousMove の速度は正の pan で画面が右へ動くが、
-  位置（GetStatus・AbsoluteMove・RelativeMove）は正の pan で左を向く。tilt はどちらも正で上。
-  （この個体を据え置きで使ったときの実測。）
-- **画像の上下反転（flip）をオンにして天井に逆さに付けると、首振りは上下左右とも逆になる**（実機：step up は部屋の下、step left は部屋の右を向いた）。
+- **RTSP は同時に3接続まで。** WebRTC・音だけの表示・録音・録画・`live_packets()` は、それぞれ1本使う。
+- **RTSP の音声だけは受けられない。** 録音も映像ごと受けて捨てる。
+- **カメラの RTCP の時刻が乱れている**（約 0.5 秒ごとに ±0.38 秒）。そのまま使うと映像が毎秒つかえる。
+  ライブラリは、ffmpeg では届いた時刻を使い（`-use_wallclock_as_timestamps 1`）、`packets` では時刻を付け直して渡す。
+- **首振りの向き。** ONVIF の pan は、速度と位置で正負が逆になる。上下反転（flip）をオンにして天井に逆さに付けると、上下左右とも逆になる。
   `TapoC220.inverted`（None は未確定＝正立として扱う。コンストラクタ引数か代入で明示）と `await cam.detect_inverted()`（`settings.flip()` から決める。
   読めなければ False で警告）があり、inverted のとき `move`・`step` は向きを入れ替える。生の位置を部屋から見た向き
   （pan 正で左、tilt 正で上）に直すのは `cam.room_position(pos)`。`goto`・`position()`・プリセットは生の値のまま。
   CLI の `move`・`step` は `--inverted auto|on|off`（既定 auto）。
-- ContinuousMove の Timeout は整数の秒だけ。`PT0.5S` を送ると、カメラの HTTP サーバが壊れた応答（500）を返す。
-  ライブラリは秒を切り上げて送る。Timeout を省くとカメラの既定（180 秒）まで動き続けるので、WebUI は 5 秒を指定し、
-  押している間は 3 秒ごとに送り直す。
-- 1秒間動かしたときの位置の変化は、pan が速度 0.1 / 0.5 / 1.0 で約 0.06 / 0.15 / 0.20、tilt が速度 0.5 で約 0.71
-  （指示の往復の時間を含む粗い値）。tilt は正規化した値に対して速い。
-- 移動の指示はすぐ応答が返る。GetStatus の位置は動いている途中も変わるが、MoveStatus は常に UNKNOWN なので、
-  動き終えたかは位置が変わらなくなったことで判断する。動いている途中に次の移動を送ると、前の移動は打ち切られる。
-- 範囲外の AbsoluteMove は `ter:InvalidPosition` で拒まれる。
-
-### スピーカー
-
-RTSP にも ONVIF にも音声を送る経路が無いので、Tapo アプリが使う独自の双方向音声を使う（手順は go2rtc の `pkg/tapo` を参考にした）。
-
-1. 8800 番の `POST /stream` を Digest 認証する。ユーザは `admin`、パスワードは **Tapo アカウントのパスワード**の
-   SHA256（大文字の16進）。カメラアカウントのパスワードではない。
-2. `{"params":{"talk":{"mode":"aec"},"method":"get"}}` を送り、`session_id` を受け取る。
-3. G.711 A-law（8kHz）を MPEG-TS に包み、20ms ずつ実時間の速さで multipart として送る。
-
-カメラから受信の確認は返らない。テスト音を鳴らしながらカメラのマイクで録音し、再生の時刻に音量が上がることは確かめた。
-
-送信が届いていないことには、次の2つで気づいて `TalkError` にする（鳴っていないのに、鳴らしたことにしない）。
-分かるのは「カメラが受け取ったか」までで、受け取った音を実際に鳴らしたかは、この経路では分からない。
-
-- カメラが接続を閉じた。
-- 送ったのにカメラが受け取っていない音声が 3 秒ぶんを超えた（TCP の確認が返っていない量を OS に尋ねる。Linux だけ）。
-  カメラが止まっても、OS の送信バッファが埋まるまでは書き込みが成功し続けるので、書き込みの成否だけでは数分気づけない。
-  ふだんは 0.05 秒ぶんほどしか溜まらない（20 秒の再生で実測）。
-
-録画の取り出し（同じ 8800 番）とは、同時に使える。再生の途中で鳴らしても、鳴らしている途中で再生を始めても、両方とも最後まで進んだ。
-
-非公式のプロトコルなので、ファームウェアの更新で使えなくなる可能性がある。
-
-### microSD の録画
-
-ONVIF に録画の検索・再生のサービス（Profile G）は無く、RTSP でも再生できない。Tapo 独自の2つの経路を使う。どちらも認証は Tapo アカウントのパスワード。
-
-- 一覧は 443 番の独自の API。ログインの手順が込み入っているので [pytapo](https://github.com/JurajNyiri/pytapo) に任せている。
-  録画のある日（カメラの時刻での日付）、1日の中の区間（開始・終了の UNIX 時刻と種別）、カードの状態（容量と空き）が取れる。
-  種別は 1 と 2 があり、1 は長く連続した区間、2 は短い区間として返るので、1 を常時録画、2 を検知による録画として表示している（推定）。
-- 取り出しは 8800 番。スピーカーと同じ Digest 認証のあと、時刻を指定した playback の要求を送ると、AES-CBC で暗号化された MPEG-TS が届く
-  （鍵は認証の応答の nonce とパスワードのハッシュから作る）。映像は H.264 2560×1440、音声は G.711 µ-law 16kHz（ストリーム種別 0x91）。
-  ffmpeg はこの音声の種別を知らないので、音声は TS から自分で取り出して MP4 に入れ直している。
-- ファイルの転送ではなく「再生」なので、等速でしか届かない（20 秒ぶんの取り出しに 20.8 秒）。
-  2 倍以上の速さを指定するとデータは速く届くが、音声が来なくなり、映像の時刻の進み方も変わるため、使っていない。
-- 終了時刻の指定は守られず流れ続けるので、映像の時刻（PTS）で必要な長さに達したらこちらから切る。
-  録画の無い時刻を指定すると、映像は届かず終了の通知だけが返る。録画の終端では `finished` の通知が届く前提で正常終了し、
-  途中の無通信や finished より先の接続終了は `PlaybackInterrupted`（`SdCardError` の子）として知らせる。
-  `export()` は finished で要求より短く終わった場合、保存できた秒数を返す。途中中断では受け取れた映像を MP4 に保存してから
-  `PlaybackInterrupted` を投げ、例外の `saved` に保存秒数、`path` に保存先を入れる。
-  C220 では、区間の切れ目では finished は届かず（空いた時間を飛ばして次の区間へ続く）、録画の最新の端まで流すと届くことを確かめた。
-- 取り出している間は、区間の一覧をカメラが出さない（一覧に要る ID の発行が `USER_ID_FULL`（-71101）で拒まれ、先に取った ID も無効になる）。
-  取り出しの `client_id` にその ID を使うと一覧は取れるが、今度は取り出しのほうが止まる。両立する方法は見つからなかった。
-  録画のある日・検知の記録・カードの状態は、取り出している間も取れる。
-  そこで `segments()` は最後に取れた一覧を覚えておき、取り出している間はそれを返す（まだ読んでいない日は `SdCardError`）。
-
-```python
-sd = cam.sdcard                               # tapo_c220.sdcard.SdCard
-days = await sd.days()                         # ["20261008", "20261009", ...]
-segments = await sd.segments(days[-1])         # [Segment(start, end, kind), ...]
-await sd.export(segments[-1].start, 60, "clip.mp4")   # 60 秒ぶんを MP4 に（約 60 秒かかる）
-async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を、finished まで受け取る
-    ...
-```
-
-録画をパケットの列として読むのは `sd.packets(start)`（`tapo_c220.packets.SdPackets`）。止めるまで、または録画の終わりまで続く。
-いま届いている位置（録画の時刻）は、TS の PTS の進みから求める（`position`）。
-ブラウザでの再生は使用例の側（`examples/webui/webrtc.py` の `SdPlayer`）にある。映像の H.264 は変換せず送り、
-音声は µ-law 16kHz が WebRTC の標準の形ではないので、PCM に戻して Opus にする。
+- **ContinuousMove の Timeout は整数の秒だけ**（小数を送るとカメラが壊れた応答を返す）。ライブラリは切り上げて送る。省くと 180 秒動き続ける。
+- **スピーカー**は、カメラから受信の確認が返らない。カメラが接続を閉じたときと、TCP の確認が返っていない音声が 3 秒ぶんを超えたとき（Linux だけ）に `TalkError` にする。
+  分かるのは「カメラが受け取ったか」までで、鳴ったかは分からない。録画の取り出しとは同時に使える。
+- **microSD の録画**は、Tapo アカウントのパスワード（`TAPO_CLOUD_PASSWORD`）が要る。
+  - 等速でしか届かない（20 秒ぶんに 20.8 秒）。
+  - 区間の切れ目では止まらず次の区間へ続き、録画の最新の端で `finished` が届いて正常終了する。
+    途中の無通信や finished より先の接続終了は `PlaybackInterrupted`（`SdCardError` の子）。
+    `export()` は、途中で切れたら受け取れた分を MP4 に保存してから投げる（例外の `saved` に秒数、`path` に保存先）。
+  - 取り出している間は、カメラが区間の一覧を出さない。`segments()` は最後に取れた一覧を返す（まだ読んでいない日は `SdCardError`）。
+  - 種別 1 を常時録画、2 を検知による録画として扱っている（推定）。
+- **検知イベント**は、カメラからこちらへ HTTP で着信できることが要る（ファイアウォール）。`events()` は LAN 側のアドレスの空いたポートで待ち受け、
+  カメラの IP アドレス以外からの接続は受けない。コンテナの中などでは
+  `events(port=8802, bind="0.0.0.0", advertise="http://<ホストの LAN の IP>:8802/onvif-notify")` のように、待ち受けるアドレスとカメラに伝える宛先を分けて渡す。
+  docker-proxy が中継する構成では送信元が変わり、弾かれる。
+  `events()` は変わり目だけを返す。受け取る側が遅れると、検知中の繰り返し通知から捨て、終わりの通知は残す。通知の時刻は当てにならないので、届いた時刻を使う。
+- **設定**の書き込みは、警報だけ pytapo の `setAlarm` ではなく `setAlertConfig` で書く。SD カードの初期化とファームウェアの更新の開始は、取り返しがつかないので包んでいない。
 
 ### 設定（Tapo 独自の API）
 
-`tapo_c220.settings.CameraSettings`（`cam.settings` でも取れる）。認証は Tapo アカウントのパスワード（ユーザは admin）。
+`tapo_c220.settings.CameraSettings`（`cam.settings` でも取れる）。
 
 ```python
 s = cam.settings
@@ -261,50 +177,29 @@ await s.set_privacy(True)                     # プライバシーモード
 | 首振り | `auto_track` | `set_auto_track` `cruise` `calibrate` |
 | 録画 | `recording` | `set_recording` `set_loop_recording` |
 
-- 書き込みは、実機で値を変えて読み直し、元に戻して確かめた（LED、通知、昼夜、画質の4項目、歪みの補正、電源周波数、OSD の曜日、
-  スピーカーとマイクの音量、マイクのミュート、検知の10種類、自動追尾、上書き録画、警報の音・光・音量、プライバシーモード）。
-  `set_recording`・`set_flip`・`set_scheduled_reboot` は、今と同じ値を書いて拒まれないことだけ確かめた。
-  `reboot`・`cruise`・`calibrate` は呼んでいない。映像の符号化（解像度・ビットレート）は読むだけ。
-- 警報の設定は、pytapo の `setAlarm` の書き方（`method: set`）が拒まれる。`setAlertConfig` で書く。
-- 警報をいますぐ鳴らす API は見つからない。pytapo の `startManualAlarm`（`manual_msg_alarm`）、新しいファームウェア向けと
-  される `manual_alarm`、`setSirenStatus` は、どれも「そのメソッドは無い」（-40210）。代わりに `cam.siren(秒)` が、
-  サイレンの音を作ってスピーカーの経路（8800 番）で鳴らす。音の大きさはスピーカーの音量で決まる。カメラの光は点かない。
-- ファームウェアの自動更新の設定の書き込みは、認証のエラー（-40209）で拒まれる。包んでいない。
-- SD カードの初期化とファームウェアの更新の開始は、取り返しがつかないので包んでいない。
-- この機種に無いもの：バッテリー、白色ライト、PIR、チャイム、荷物の検知。
-
-### 検知イベント（ONVIF）
+### microSD の録画と検知イベント
 
 ```python
+sd = cam.sdcard                               # tapo_c220.sdcard.SdCard
+days = await sd.days()                         # ["20261008", "20261009", ...]
+segments = await sd.segments(days[-1])         # [Segment(start, end, kind), ...]
+await sd.export(segments[-1].start, 60, "clip.mp4")   # 60 秒ぶんを MP4 に（約 60 秒かかる）
+async for chunk in sd.playback(segments[-1].start):   # 復号した MPEG-TS を、finished まで受け取る
+    ...
+
 await cam.settings.set_detection("person", True)   # オンにした検知だけ届く
 async for event in cam.events():                    # やめるまで続く。Event(kind, active, time, topic)
     print(event.kind, "検知" if event.active else "収まった")
 ```
 
-- PullPoint（CreatePullPointSubscription → PullMessages）は使えない。購読は作れるが、PullMessages を送るとカメラが何も返さずに切る。
-- WS-BaseNotification の Subscribe で、こちらが開けた HTTP の口の URL を渡すと、カメラがそこへ Notify を POST してくる。
-  `events()` は LAN 側のアドレスの空いたポートで待ち受け、カメラの IP アドレス以外からの接続は受けない。
-  カメラからこちらへ着信できること（ファイアウォール）が要る。
-  コンテナの中などでは `events(port=8802, bind="0.0.0.0", advertise="http://<ホストの LAN の IP>:8802/onvif-notify")` のように、
-  待ち受けるアドレスとカメラに伝える宛先を分けて渡す。Docker の port 公開（iptables の DNAT）なら送信元はカメラの IP のまま届くが、
-  docker-proxy が中継する構成では送信元が変わり、弾かれる。
-- 届くのは動体（Motion）・人物（People）・いたずら（Tamper）・ライン横断（LineCross）・TPSmartEvent。
-  検知している間は真を約1秒ごとに送り、収まると偽を1回送る。`events()` は変わり目だけを返す。
-  受け取る側が遅れてキューが満杯になると、検知中の繰り返し通知から捨て（`changes_only=False` では一部が届かないことがある）、終わりの通知は残す。
-- 通知に付いている時刻（UtcTime）は当てにならない（人物の検知で、最初の時刻のまま変わらなかった）。届いた時刻を使っている。
-- 実機で届いたのを確かめたのは動体と人物。いたずら・ライン横断・TPSmartEvent は起こせていない。
-  首振りの直後の動体は、届くときと届かないときがあった。
-- 過去の検知は `SdCard.detections(start, end)`（カメラが SD カードに記録した検知の一覧）でも読める。
+録画をパケットの列として読むのは `sd.packets(start)`（`tapo_c220.packets.SdPackets`）。止めるまで、または録画の終わりまで続く。
+過去の検知は `sd.detections(start, end)`（カメラが SD カードに記録した検知の一覧）でも読める。
 
 ## 止まり方・長く使ったときについて
 
-- ライブ映像と録画の再生を同時に 40 分流し続けて、止まらないこと、録画の区間の切れ目をまたいでも続くことを確かめた（Chromium）。
-  このとき、サーバのメモリが毎分約 0.7MB ずつ増え続けた。原因は RTSP を読ませていた aiortc の `MediaPlayer` で、
-  自前のスレッドで読む形（`packets.LivePackets`）に替えると増えなくなった（8 分で +0.6MB）。数時間の連続は試していない。
-
 - ffmpeg は、起こしたプロセス（WebUI のサーバなど）が強制終了されても一緒に止まる（Linux の `setpriv --pdeathsig` を通して起こす）。
-  以前は、ファイルへ録音・録画している ffmpeg が残り、カメラの RTSP の同時接続（3本）を埋めたままになった。
   Linux 以外や、`setpriv`（util-linux）が無い環境では、この仕組みは無い。
+- ライブ映像と録画の再生を同時に 40 分流し続けて、止まらないことを確かめた。メモリの測定は [Wiki の「長時間とメモリ」](https://github.com/skrtk98/tapo-c220/wiki/長時間とメモリ)。数時間の連続は試していない。
 
 ## WebUI（使用例、`examples/webui/`）
 
