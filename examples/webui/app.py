@@ -155,7 +155,8 @@ def create_app(camera: TapoC220 | None = None, record_dir: str | Path | None = N
             if origin is not None and not _origin_matches_host(origin, host):
                 return JSONResponse({"detail": "Origin が Host と一致しない（ほかのサイトからの要求）"}, status_code=403)
         server = request.scope.get("server")
-        if password is None and server is not None and not is_loopback_host(server[0]):
+        # 受けた側のアドレスが分からない（Unix ソケットの前に逆プロキシがある等）ときも、ループバックとはみなさない
+        if password is None and (server is None or not is_loopback_host(server[0])):
             return JSONResponse({"detail": "パスワードが無いので、ループバック以外からは使えない（--password か TAPO_WEBUI_PASSWORD）"},
                                 status_code=403)
         if password is not None and not _has_password(request.headers.get("authorization"), password):

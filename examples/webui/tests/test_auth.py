@@ -116,3 +116,22 @@ async def test_create_app_reads_password_from_environment(monkeypatch):
         response = await client.get("/api/record")
 
     assert response.status_code == 401
+
+
+async def test_passwordless_app_rejects_unknown_server_address(monkeypatch):
+    monkeypatch.delenv("TAPO_WEBUI_PASSWORD", raising=False)
+    app = create_app()
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET", "scheme": "http",
+             "path": "/api/record", "raw_path": b"/api/record", "query_string": b"", "root_path": "",
+             "headers": [(b"host", b"127.0.0.1")], "client": ("127.0.0.1", 50000), "server": None}
+    await app(scope, receive, send)
+
+    assert sent[0]["status"] == 403
